@@ -181,6 +181,19 @@ async def ws_user_stream(exchange: BaseExchange, cfg: dict):
     if isinstance(exchange, PaperExchange):
         async def paper_fill_handler(event):
             await handle_user_event(event, cfg, exchange)
+            # 成交後立刻同步 paper 持倉到 state（不等下一輪主循環）
+            paper_pos = await exchange.get_positions()
+            state["_binance_positions_cache"] = {
+                p["symbol"]: {
+                    "qty": abs(float(p["positionAmt"])),
+                    "avg_entry": float(p["entryPrice"]),
+                    "unrealized_pnl": float(p.get("unRealizedProfit", 0)),
+                    "initial_margin": float(p.get("initialMargin", 0)),
+                } for p in paper_pos if abs(float(p["positionAmt"])) > 0
+            }
+            bal = await exchange.get_balance()
+            if bal:
+                state["balance_cache"] = bal
         exchange.register_fill_callback(paper_fill_handler)
         state["ws_user_connected"] = True
         logger.info("✅ [PAPER] User Data 本地模擬已就緒")
@@ -865,6 +878,10 @@ async def trading_loop():
         await asyncio.sleep(0.5)
     logger.info("價格 WS 就緒，開始主循環")
 
+    # Paper mode：保存初始 exchange 實例，主循環重用（避免每輪重建丟失持倉）
+    from exchanges.paper import PaperExchange
+    _paper_exchange = exchange if isinstance(exchange, PaperExchange) else None
+
     while True:
         try:
             cfg = load_config()
@@ -872,11 +889,15 @@ async def trading_loop():
                 await asyncio.sleep(5)
                 continue
 
-            exchange = get_exchange(cfg)
+            # Paper mode 重用同一實例，正式版每輪重建（可能切換 testnet/live）
+            if _paper_exchange is not None:
+                exchange = _paper_exchange
+            else:
+                exchange = get_exchange(cfg)
+
             open_syms = set(state["_binance_positions_cache"].keys())
 
-            # Paper mode：每輪檢查掛單是否應該成交
-            from exchanges.paper import PaperExchange
+            # Paper mode：每輪檢查掛單是否應該成交（補漏：掛單後價格繼續移動的情況）
             if isinstance(exchange, PaperExchange):
                 await exchange.check_and_trigger_orders(cfg)
                 # 同步 paper 持倉到 state

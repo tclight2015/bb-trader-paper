@@ -183,6 +183,23 @@ class PaperExchange(BaseExchange):
         }
         self._orders[order_id] = order
         logger.info(f"[PAPER] 限價單 #{order_id} {symbol} {side} @ {price} qty={quantity}")
+
+        # 掛單後立即檢查是否應該成交（模擬正式版幣安即時撮合）
+        # 場景：觸碰上軌時現價已 >= 掛單價，應立刻成交
+        current_price = self._get_price(symbol)
+        if current_price:
+            should_fill = False
+            if side == "SELL" and current_price >= price:
+                should_fill = True
+            elif side == "BUY" and current_price <= price:
+                should_fill = True
+            if should_fill:
+                await self._simulate_fill(order_id, symbol, side, quantity, price, reduce_only)
+                return {
+                    "orderId": order_id, "symbol": symbol,
+                    "status": "FILLED", "avgPrice": str(price),
+                }
+
         return {"orderId": order_id, "symbol": symbol, "status": "NEW"}
 
     async def place_market_order(self, symbol: str, side: str, quantity: float,
@@ -223,6 +240,16 @@ class PaperExchange(BaseExchange):
         }
         self._orders[order_id] = order
         logger.info(f"[PAPER] Stop-Market #{order_id} {symbol} {side} stopPrice={stop_price} qty={quantity}")
+
+        # 掛單後立即檢查（止損單掛出時現價已超過 stopPrice 的邊界情況）
+        current_price = self._get_price(symbol)
+        if current_price and side == "BUY" and current_price >= stop_price:
+            await self._simulate_fill(order_id, symbol, side, quantity, current_price, reduce_only)
+            return {
+                "orderId": order_id, "symbol": symbol,
+                "status": "FILLED", "avgPrice": str(current_price),
+            }
+
         return {"orderId": order_id, "symbol": symbol, "status": "NEW"}
 
     async def cancel_order(self, symbol: str, order_id: str) -> dict:
