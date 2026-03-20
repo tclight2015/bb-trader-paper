@@ -17,6 +17,7 @@
 | v4.1 | 修正 `prev_high_score` 計算邏輯；Paper mode 新增 | Paper mode 止盈止損方向 bug |
 | v4.2 | Paper mode 大量 bug 修正（見已解決 Bug）；儀表板新增功能 | 見「已知設計遺漏」 |
 | v4.3 | 修正 roe_pct 用累積總保證金計算；修正 avg_entry 平倉時可能為空；Paper mode 槓桿從 config 讀取 | — |
+| v4.4 | 修正分批平倉 PnL 只記最後一張；累積 `symbol_realized_pnl` 確保全部批次都加總 | — |
 
 ---
 
@@ -157,6 +158,7 @@ prev_high_score = count_score + avg_excess * 0.1
 | `roe_pct` 計算只用單筆保證金 | v1-v4.2 | v4.3 | 開多槍時 roe_pct 膨脹（5槍卻只除以1槍保證金）；改用 `symbol_total_margin` 累積所有槍保證金 |
 | `avg_entry` 平倉時可能為空 | v1-v4.2 | v4.3 | 平倉時 `_binance_positions_cache` 已清空，`avg_entry` 退回 `close_price`，PnL 顯示 0；改用 `symbol_avg_entry` 在每次 SELL 成交時存下均入價 |
 | Paper mode 預設槓桿寫死 20 | v4.1-v4.2 | v4.3 | `PaperExchange` 預設槓桿 20 但 config 是 30，保證金計算偏高；改為從 `cfg["leverage"]` 傳入 |
+| 分批平倉 PnL 只記最後一張 | v1-v4.3 | v4.4 | `tp_limit_pct=50` 時止盈分兩張，限價單那張的 PnL 沒有被記入；改用 `symbol_realized_pnl` 累積所有批次，完全平倉後才寫DB |
 
 ---
 
@@ -183,6 +185,7 @@ state = {
     "symbol_sell_count": dict,          # symbol -> SELL 成交次數（開倉+加碼，平倉後清除）
     "symbol_total_margin": dict,         # symbol -> 累積總保證金（每次SELL成交後累加，平倉後清除）
     "symbol_avg_entry": dict,            # symbol -> 最新均入價（每次SELL成交後從持倉快取更新，平倉後清除）
+    "symbol_realized_pnl": dict,         # symbol -> 累積已實現損益（每次BUY成交後累加，完全平倉記DB後清除）
     "candidate_pool": list,             # 當前候選監控池
     "scanner_latest_result": list,      # 掃描器最新結果（供 trader 讀取）
     "tp_sl_orders": dict,               # symbol -> {tp_limit, tp_stop, sl_limit, sl_stop}
@@ -208,7 +211,7 @@ state = {
 - 帳戶統計：總餘額、可用保證金、浮動損益、持倉幣種數、每單合約價值
 - 保證金使用率進度條
 - **已實現盈虧卡片**：下拉選今日/7天/30天/90天，顯示損益/交易次數/勝率（台北時間）
-- 持倉狀態卡片：均入價、保證金、**開倉筆數**、浮動損益、隱形網格列表
+- 持倉狀態卡片：均入價、保證金、**開倉筆數**、**浮動損益（含本金%）**、隱形網格列表
 - 系統控制按鈕、候選監控池
 - 出入金紀錄
 

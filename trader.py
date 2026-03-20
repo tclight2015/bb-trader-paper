@@ -47,6 +47,7 @@ state = {
     "symbol_sell_count": {},    # symbol -> SELL 成交次數（開倉+加碼）
     "symbol_total_margin": {},  # symbol -> 累積總保證金（每次SELL成交後累加）
     "symbol_avg_entry": {},     # symbol -> 最新均入價（每次SELL成交後更新，平倉後清除）
+    "symbol_realized_pnl": {},  # symbol -> 累積已實現損益（分批平倉時累加，完全平倉後記DB）
     "symbol_setup_done": set(),
     "symbol_filters_cache": {},
 
@@ -345,28 +346,34 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
             await place_tp_sl(exchange, cfg, symbol)
 
         elif side == "BUY" and status == "FILLED" and realized_pnl != 0:
-            await handle_close_fill(exchange, cfg, symbol, fill_price, fill_qty, realized_pnl)
+            # 累積已實現損益（分批止盈時每張都累加）
+            state["symbol_realized_pnl"][symbol] = (
+                state["symbol_realized_pnl"].get(symbol, 0) + realized_pnl
+            )
+            # 只在持倉歸零時才記錄平倉（避免分批止盈時只記一半）
+            pos_after = state["_binance_positions_cache"].get(symbol)
+            if not pos_after or pos_after.get("qty", 0) <= 0:
+                await handle_close_fill(exchange, cfg, symbol, fill_price, fill_qty)
+            else:
+                # 持倉還有，重掛止盈止損
+                await asyncio.sleep(0.5)
+                await place_tp_sl(exchange, cfg, symbol)
 
 
 async def handle_close_fill(exchange: BaseExchange, cfg: dict, symbol: str,
-                             close_price: float, qty: float, realized_pnl: float):
-    await asyncio.sleep(1)
-    pos = await get_position_rest(exchange, symbol)
-    if pos and pos["qty"] > 0:
-        await place_tp_sl(exchange, cfg, symbol)
-        return
+                             close_price: float, qty: float):
+    """持倉已確認歸零後呼叫，記錄平倉歷史"""
+    # 用累積已實現損益（含所有分批平倉）
+    total_pnl = state["symbol_realized_pnl"].get(symbol, 0)
 
     cached = state["_binance_positions_cache"].get(symbol, {})
-    # 優先用 SELL 成交時記錄的均入價，快取可能已被清空
     avg_entry = (state["symbol_avg_entry"].get(symbol)
                  or cached.get("avg_entry")
                  or close_price)
-    # 用累積總保證金計算 roe_pct（所有開倉+加碼的合計）
     total_margin = state["symbol_total_margin"].get(symbol, 0)
     if total_margin <= 0:
         total_margin = cached.get("initial_margin", 0)
-    pnl = realized_pnl
-    roe_pct = (pnl / total_margin * 100) if total_margin > 0 else 0
+    roe_pct = (total_pnl / total_margin * 100) if total_margin > 0 else 0
     order_count = state["symbol_sell_count"].get(symbol, 1)
 
     if avg_entry > 0 and close_price < avg_entry:
@@ -378,7 +385,7 @@ async def handle_close_fill(exchange: BaseExchange, cfg: dict, symbol: str,
 
     record_trade_close(
         symbol=symbol, avg_entry=avg_entry, close_price=close_price,
-        total_qty=qty, total_margin=total_margin, total_pnl=pnl,
+        total_qty=qty, total_margin=total_margin, total_pnl=total_pnl,
         roe_pct=roe_pct, close_reason=close_reason,
         exchange=exchange.name, order_count=order_count
     )
@@ -386,16 +393,16 @@ async def handle_close_fill(exchange: BaseExchange, cfg: dict, symbol: str,
     candidate_info = next((c for c in state["candidate_pool"] if c["symbol"] == symbol), {})
     analytics_id = add_trade_analytics(
         symbol=symbol, avg_entry=avg_entry, close_price=close_price,
-        total_qty=qty, total_margin=total_margin, total_pnl=pnl,
+        total_qty=qty, total_margin=total_margin, total_pnl=total_pnl,
         roe_pct=roe_pct, close_reason=close_reason,
         market_snapshot=candidate_info, exchange=exchange.name
     )
     if analytics_id:
         asyncio.create_task(ml_fill_task(exchange, analytics_id, symbol))
 
-    write_log("CLOSE", f"平倉完成(WS) PnL={pnl:.4f}", symbol=symbol,
+    write_log("CLOSE", f"平倉完成(WS) PnL={total_pnl:.4f}", symbol=symbol,
               detail={"avg_entry": avg_entry, "close_price": close_price,
-                      "pnl": round(pnl, 4), "roe_pct": round(roe_pct, 2)})
+                      "pnl": round(total_pnl, 4), "roe_pct": round(roe_pct, 2)})
     _clear_symbol_state(symbol)
 
 
@@ -733,6 +740,7 @@ def _clear_symbol_state(symbol: str):
     state["symbol_sell_count"].pop(symbol, None)
     state["symbol_total_margin"].pop(symbol, None)
     state["symbol_avg_entry"].pop(symbol, None)
+    state["symbol_realized_pnl"].pop(symbol, None)
     state["margin_pause"] = False
 
 

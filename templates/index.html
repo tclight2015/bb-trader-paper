@@ -1019,7 +1019,12 @@ async function loadPositions() {
               </div>
               <div class="pos-stat">
                 <div class="pos-stat-label">浮動損益</div>
-                <div class="pos-stat-value" style="color:${pnlColor}">${unrealizedPnl >= 0 ? '+' : ''}${fmtUSDT(unrealizedPnl)} USDT</div>
+                <div class="pos-stat-value" style="color:${pnlColor}">
+                  ${unrealizedPnl >= 0 ? '+' : ''}${fmtUSDT(unrealizedPnl)} USDT
+                  <span style="font-size:12px;margin-left:4px;opacity:0.85">
+                    (${margin > 0 ? (unrealizedPnl >= 0 ? '+' : '') + (unrealizedPnl / margin * 100).toFixed(2) + '%' : '—'})
+                  </span>
+                </div>
               </div>
             </div>
             <div class="orders-list">
