@@ -284,6 +284,7 @@ def api_account():
         "margin_pause": state["margin_pause"],
         "candidate_pool": state["candidate_pool"],
         "max_symbols": cfg.get("max_symbols", 3),
+        "capital_per_order_pct": cfg.get("capital_per_order_pct", 1.0),
     })
 
 

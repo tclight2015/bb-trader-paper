@@ -176,9 +176,11 @@ class PaperExchange(BaseExchange):
         order_id = self._next_order_id()
         current_price = self._get_price(symbol) or price
 
-        # 自動推斷 intent
+        # 自動推斷 intent，加 0.1% 容差避免邊界誤判
+        # stop_price 明顯低於現價（差距 > 0.1%）才算止盈，否則算止損
         if not intent and side == "BUY":
-            intent = "tp" if price < current_price else "sl"
+            threshold = current_price * 0.001
+            intent = "tp" if (current_price - price) > threshold else "sl"
 
         order = {
             "orderId": order_id,
@@ -233,9 +235,10 @@ class PaperExchange(BaseExchange):
         order_id = self._next_order_id()
         current_price = self._get_price(symbol) or stop_price
 
-        # 自動推斷 intent
+        # 自動推斷 intent，加 0.1% 容差
         if not intent and side == "BUY":
-            intent = "tp" if stop_price < current_price else "sl"
+            threshold = current_price * 0.001
+            intent = "tp" if (current_price - stop_price) > threshold else "sl"
 
         order = {
             "orderId": order_id,

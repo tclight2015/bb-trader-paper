@@ -901,6 +901,7 @@ async function loadAccount() {
     const b = data.balance;
 
     document.getElementById('maxSymbols').textContent = data.max_symbols ?? 3;
+    window._lastAccountData = data;  // 供持倉卡片計算開倉筆數
 
     if (b) {
       document.getElementById('totalBalance').textContent = fmtUSDT(b.total);
@@ -986,6 +987,12 @@ async function loadPositions() {
       const tpSl = pos.tp_sl_orders || {};
       const pnlColor = unrealizedPnl >= 0 ? 'var(--success)' : 'var(--danger)';
 
+      const acctData = window._lastAccountData || {};
+      const totalBalance = acctData?.balance?.total || 0;
+      const capitalPct = acctData?.capital_per_order_pct || 1.0;
+      const marginPerShot = totalBalance > 0 ? totalBalance * (capitalPct / 100) : 100;
+      const shots = marginPerShot > 0 ? Math.round(margin / marginPerShot * 10) / 10 : '—';
+
       return `
         <div class="position-card">
           <div class="position-header">
@@ -1005,6 +1012,10 @@ async function loadPositions() {
               <div class="pos-stat">
                 <div class="pos-stat-label">保證金</div>
                 <div class="pos-stat-value">${fmtUSDT(margin)} USDT</div>
+              </div>
+              <div class="pos-stat">
+                <div class="pos-stat-label">開倉筆數</div>
+                <div class="pos-stat-value blue">${shots} 槍</div>
               </div>
               <div class="pos-stat">
                 <div class="pos-stat-label">浮動損益</div>
@@ -1211,7 +1222,7 @@ async function loadReports() {
           <td style="font-family:var(--mono);font-size:11px">${fmtTime(h.close_time)}</td>
           <td style="font-family:var(--mono)">${fmt(h.avg_entry_price)}</td>
           <td style="font-family:var(--mono)">${fmt(h.close_price)}</td>
-          <td style="text-align:center">${fmtUSDT(h.total_quantity)}</td>
+          <td style="text-align:center">${h.order_count ?? '—'}</td>
           <td class="${pnlClass}" style="font-family:var(--mono)">${(h.total_pnl>=0?'+':'') + fmtUSDT(h.total_pnl)}</td>
           <td class="${pnlClass}" style="font-family:var(--mono)">${(capPct>=0?'+':'') + fmtPct(capPct)}</td>
           <td style="font-size:11px;color:var(--text3)">${h.close_reason||'—'}</td>

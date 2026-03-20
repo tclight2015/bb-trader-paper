@@ -42,7 +42,8 @@ def init_db():
             total_margin REAL,
             total_pnl REAL,
             roe_pct REAL,
-            close_reason TEXT
+            close_reason TEXT,
+            order_count INTEGER DEFAULT 1
         )
     """)
 
@@ -106,6 +107,7 @@ def init_db():
 def _migrate(c):
     migrations = [
         ("trade_history",   "exchange",     "TEXT DEFAULT 'binance'"),
+        ("trade_history",   "order_count",  "INTEGER DEFAULT 1"),
         ("trade_analytics", "exchange",     "TEXT DEFAULT 'binance'"),
         ("trade_analytics", "hold_minutes", "REAL"),
         ("trade_analytics", "filled_1h",    "INTEGER DEFAULT 0"),
@@ -124,17 +126,17 @@ def _migrate(c):
 
 def record_trade_close(symbol, avg_entry, close_price, total_qty,
                        total_margin, total_pnl, roe_pct, close_reason,
-                       open_time=None, exchange="binance"):
+                       open_time=None, exchange="binance", order_count=1):
     conn = get_conn()
     now = datetime.now(TZ_TAIPEI).strftime("%Y-%m-%d %H:%M:%S")
     conn.execute("""
         INSERT INTO trade_history
         (symbol, exchange, open_time, close_time, avg_entry_price, close_price,
-         total_quantity, total_margin, total_pnl, roe_pct, close_reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         total_quantity, total_margin, total_pnl, roe_pct, close_reason, order_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (symbol, exchange, open_time or now, now,
           avg_entry, close_price, total_qty,
-          total_margin, total_pnl, roe_pct, close_reason))
+          total_margin, total_pnl, roe_pct, close_reason, order_count))
     conn.commit()
     conn.close()
 

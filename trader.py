@@ -44,6 +44,7 @@ state = {
     "black_k_last_k_time": {},
     "hidden_grids": {},
     "known_fills": {},
+    "symbol_sell_count": {},    # symbol -> SELL 成交次數（開倉+加碼）
     "symbol_setup_done": set(),
     "symbol_filters_cache": {},
 
@@ -305,6 +306,8 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
                   })
 
         if side == "SELL" and status == "FILLED":
+            # 累計開倉/加碼次數
+            state["symbol_sell_count"][symbol] = state["symbol_sell_count"].get(symbol, 0) + 1
             update_hidden_grids(symbol, fill_price, cfg)
             await asyncio.sleep(0.5)
             await place_tp_sl(exchange, cfg, symbol)
@@ -326,8 +329,8 @@ async def handle_close_fill(exchange: BaseExchange, cfg: dict, symbol: str,
     margin = cached.get("initial_margin", 0)
     pnl = realized_pnl
     roe_pct = (pnl / margin * 100) if margin > 0 else 0
+    order_count = state["symbol_sell_count"].get(symbol, 1)
 
-    # 判斷平倉原因：SHORT 倉，close_price < avg_entry = 止盈，否則 = 止損
     if avg_entry > 0 and close_price < avg_entry:
         close_reason = "TP_WS"
     elif avg_entry > 0 and close_price > avg_entry:
@@ -339,7 +342,7 @@ async def handle_close_fill(exchange: BaseExchange, cfg: dict, symbol: str,
         symbol=symbol, avg_entry=avg_entry, close_price=close_price,
         total_qty=qty, total_margin=margin, total_pnl=pnl,
         roe_pct=roe_pct, close_reason=close_reason,
-        exchange=exchange.name
+        exchange=exchange.name, order_count=order_count
     )
 
     candidate_info = next((c for c in state["candidate_pool"] if c["symbol"] == symbol), {})
@@ -646,11 +649,13 @@ async def close_symbol(exchange: BaseExchange, cfg: dict, symbol: str, reason: s
 
         pnl = (avg_entry - actual_close_price) * total_qty
         roe_pct = (pnl / margin * 100) if margin > 0 else 0
+        order_count = state["symbol_sell_count"].get(symbol, 1)
 
         record_trade_close(
             symbol=symbol, avg_entry=avg_entry, close_price=actual_close_price,
             total_qty=total_qty, total_margin=margin, total_pnl=pnl,
-            roe_pct=roe_pct, close_reason=reason, exchange=exchange.name
+            roe_pct=roe_pct, close_reason=reason, exchange=exchange.name,
+            order_count=order_count
         )
 
         candidate_info = next((c for c in state["candidate_pool"] if c["symbol"] == symbol), {})
@@ -687,6 +692,7 @@ def _clear_symbol_state(symbol: str):
     state["_binance_positions_cache"].pop(symbol, None)
     state["triggered_symbols"].discard(symbol)
     state["symbol_open_paused"].discard(symbol)
+    state["symbol_sell_count"].pop(symbol, None)
     state["margin_pause"] = False
 
 
