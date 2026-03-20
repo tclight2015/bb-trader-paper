@@ -327,19 +327,26 @@ async def handle_close_fill(exchange: BaseExchange, cfg: dict, symbol: str,
     pnl = realized_pnl
     roe_pct = (pnl / margin * 100) if margin > 0 else 0
 
+    # 判斷平倉原因：SHORT 倉，close_price < avg_entry = 止盈，否則 = 止損
+    if avg_entry > 0 and close_price < avg_entry:
+        close_reason = "TP_WS"
+    elif avg_entry > 0 and close_price > avg_entry:
+        close_reason = "SL_WS"
+    else:
+        close_reason = "CLOSE_WS"
+
     record_trade_close(
         symbol=symbol, avg_entry=avg_entry, close_price=close_price,
         total_qty=qty, total_margin=margin, total_pnl=pnl,
-        roe_pct=roe_pct, close_reason="TP_WS",
+        roe_pct=roe_pct, close_reason=close_reason,
         exchange=exchange.name
     )
 
-    # ML 記錄 + 啟動補填 task
     candidate_info = next((c for c in state["candidate_pool"] if c["symbol"] == symbol), {})
     analytics_id = add_trade_analytics(
         symbol=symbol, avg_entry=avg_entry, close_price=close_price,
         total_qty=qty, total_margin=margin, total_pnl=pnl,
-        roe_pct=roe_pct, close_reason="TP_WS",
+        roe_pct=roe_pct, close_reason=close_reason,
         market_snapshot=candidate_info, exchange=exchange.name
     )
     if analytics_id:
@@ -496,6 +503,11 @@ async def place_tp_sl(exchange: BaseExchange, cfg: dict, symbol: str):
     tp_price = align_price(tp_price_raw, filters["tick_size"])
     sl_price = align_price(sl_price_raw, filters["tick_size"])
 
+    # 取消所有掛單（確保殘留的舊止盈止損單都被清掉）
+    try:
+        await exchange.cancel_all_orders(symbol)
+    except Exception:
+        pass
     old = state["tp_sl_orders"].get(symbol, {})
     for order_id in old.values():
         try:

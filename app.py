@@ -7,7 +7,8 @@ import os
 import threading
 import logging
 from flask import Flask, jsonify, render_template, request, Response
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+TZ_TAIPEI = timezone(timedelta(hours=8))
 from config import load_config, save_config, get_notional
 from database import (
     init_db, get_trade_history, get_daily_pnl, get_cumulative_pnl,
@@ -185,7 +186,7 @@ async def run_scan():
 
         results.sort(key=lambda x: x["dist_to_upper_pct"])
         scanner_cache["data"] = results
-        scanner_cache["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        scanner_cache["last_updated"] = datetime.now(TZ_TAIPEI).strftime("%Y-%m-%d %H:%M:%S")
     except Exception as e:
         logger.error(f"掃描器錯誤: {e}", exc_info=True)
         return
@@ -402,6 +403,40 @@ def api_config_set():
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/reports/pnl_summary")
+def api_pnl_summary():
+    """台北時間為基準，回傳今日/7天/30天/90天的已實現盈虧"""
+    from database import get_conn
+    conn = get_conn()
+    now_taipei = datetime.now(TZ_TAIPEI)
+
+    def query_pnl(days):
+        if days == 0:
+            # 今日：台北時間當天 00:00 起
+            since = now_taipei.strftime("%Y-%m-%d") + " 00:00:00"
+        else:
+            from datetime import timedelta
+            since = (now_taipei - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        row = conn.execute("""
+            SELECT
+                COUNT(*) as trades,
+                SUM(CASE WHEN total_pnl > 0 THEN 1 ELSE 0 END) as wins,
+                COALESCE(SUM(total_pnl), 0) as pnl
+            FROM trade_history
+            WHERE close_time >= ?
+        """, (since,)).fetchone()
+        return dict(row) if row else {"trades": 0, "wins": 0, "pnl": 0}
+
+    result = {
+        "today":   query_pnl(0),
+        "7d":      query_pnl(7),
+        "30d":     query_pnl(30),
+        "90d":     query_pnl(90),
+    }
+    conn.close()
+    return jsonify(result)
+
+
 @app.route("/api/reports/history")
 def api_history():
     return jsonify(get_trade_history(100))
@@ -459,7 +494,7 @@ def api_logs_export():
     """下載最近200筆日誌為JSON檔，供分析用"""
     limit = int(request.args.get("limit", 200))
     json_str = export_logs_json(limit=limit)
-    filename = f"bb_grid_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    filename = f"bb_grid_logs_{datetime.now(TZ_TAIPEI).strftime('%Y%m%d_%H%M%S')}.json"
     return Response(
         json_str,
         mimetype="application/json",

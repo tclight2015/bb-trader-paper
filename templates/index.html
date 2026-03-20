@@ -581,6 +581,34 @@ select.filter-select {
     </div>
   </div>
 
+  <!-- Realized PnL Summary -->
+  <div class="card section">
+    <div class="card-header">
+      <div class="card-title">已實現盈虧</div>
+      <select id="pnlPeriodSelect" class="filter-select" onchange="loadPnlSummary()" style="font-size:12px;padding:4px 8px">
+        <option value="today">今日</option>
+        <option value="7d">7 天</option>
+        <option value="30d">30 天</option>
+        <option value="90d">90 天</option>
+      </select>
+    </div>
+    <div class="card-body" style="display:flex;gap:24px;align-items:center;flex-wrap:wrap">
+      <div>
+        <div class="stat-label">損益</div>
+        <div class="stat-value" id="summaryPnl" style="font-size:28px">—</div>
+        <div class="stat-sub">USDT</div>
+      </div>
+      <div>
+        <div class="stat-label">交易次數</div>
+        <div class="stat-value" id="summaryTrades" style="font-size:22px">—</div>
+      </div>
+      <div>
+        <div class="stat-label">勝率</div>
+        <div class="stat-value" id="summaryWinRate" style="font-size:22px">—</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Controls -->
   <div class="two-col section">
     <div class="card">
@@ -844,7 +872,26 @@ function fmtTime(s) {
 
 // ===== DASHBOARD =====
 async function loadDashboard() {
-  await Promise.all([loadAccount(), loadPositions(), loadCapitalLog()]);
+  await Promise.all([loadAccount(), loadPositions(), loadCapitalLog(), loadPnlSummary()]);
+}
+
+async function loadPnlSummary() {
+  try {
+    const period = document.getElementById('pnlPeriodSelect')?.value || 'today';
+    const res = await fetch('/api/reports/pnl_summary');
+    const data = await res.json();
+    const d = data[period] || {pnl: 0, trades: 0, wins: 0};
+    const pnl = parseFloat(d.pnl || 0);
+    const trades = parseInt(d.trades || 0);
+    const wins = parseInt(d.wins || 0);
+    const winRate = trades > 0 ? Math.round(wins / trades * 100) + '%' : '—';
+
+    const pnlEl = document.getElementById('summaryPnl');
+    pnlEl.textContent = (pnl >= 0 ? '+' : '') + fmtUSDT(pnl);
+    pnlEl.className = 'stat-value ' + (pnl > 0 ? 'green' : pnl < 0 ? 'red' : '');
+    document.getElementById('summaryTrades').textContent = trades;
+    document.getElementById('summaryWinRate').textContent = winRate;
+  } catch(e) { console.error(e); }
 }
 
 async function loadAccount() {
@@ -1164,7 +1211,7 @@ async function loadReports() {
           <td style="font-family:var(--mono);font-size:11px">${fmtTime(h.close_time)}</td>
           <td style="font-family:var(--mono)">${fmt(h.avg_entry_price)}</td>
           <td style="font-family:var(--mono)">${fmt(h.close_price)}</td>
-          <td style="text-align:center">${h.position_count}</td>
+          <td style="text-align:center">${fmtUSDT(h.total_quantity)}</td>
           <td class="${pnlClass}" style="font-family:var(--mono)">${(h.total_pnl>=0?'+':'') + fmtUSDT(h.total_pnl)}</td>
           <td class="${pnlClass}" style="font-family:var(--mono)">${(capPct>=0?'+':'') + fmtPct(capPct)}</td>
           <td style="font-size:11px;color:var(--text3)">${h.close_reason||'—'}</td>
