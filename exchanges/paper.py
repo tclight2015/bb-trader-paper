@@ -228,8 +228,15 @@ class PaperExchange(BaseExchange):
         }
 
     async def place_stop_market_order(self, symbol: str, side: str, quantity: float,
-                                      stop_price: float, reduce_only: bool = True) -> dict:
+                                      stop_price: float, reduce_only: bool = True,
+                                      intent: str = "") -> dict:
         order_id = self._next_order_id()
+        current_price = self._get_price(symbol) or stop_price
+
+        # 自動推斷 intent
+        if not intent and side == "BUY":
+            intent = "tp" if stop_price < current_price else "sl"
+
         order = {
             "orderId": order_id,
             "symbol": symbol,
@@ -241,19 +248,11 @@ class PaperExchange(BaseExchange):
             "executedQty": 0,
             "status": "NEW",
             "reduceOnly": reduce_only,
+            "intent": intent,
             "time": int(time.time() * 1000),
         }
         self._orders[order_id] = order
-        logger.info(f"[PAPER] Stop-Market #{order_id} {symbol} {side} stopPrice={stop_price} qty={quantity}")
-
-        # 掛單後立即檢查（止損單掛出時現價已超過 stopPrice 的邊界情況）
-        current_price = self._get_price(symbol)
-        if current_price and side == "BUY" and current_price >= stop_price:
-            await self._simulate_fill(order_id, symbol, side, quantity, current_price, reduce_only)
-            return {
-                "orderId": order_id, "symbol": symbol,
-                "status": "FILLED", "avgPrice": str(current_price),
-            }
+        logger.info(f"[PAPER] Stop-Market #{order_id} {symbol} {side} stopPrice={stop_price} qty={quantity} intent={intent}")
 
         return {"orderId": order_id, "symbol": symbol, "status": "NEW"}
 
@@ -413,9 +412,16 @@ class PaperExchange(BaseExchange):
 
             elif order_type == "STOP_MARKET":
                 stop = float(order.get("stopPrice", order_price))
-                # BUY Stop-Market（止損/止盈保底）：現價 >= stopPrice
-                if side == "BUY" and current_price >= stop:
-                    should_fill = True
+                intent = order.get("intent", "sl")
+                if side == "BUY":
+                    if intent == "tp":
+                        # 止盈保底：現價跌到 stopPrice（SHORT倉跌到止盈價）
+                        if current_price <= stop:
+                            should_fill = True
+                    else:
+                        # 止損保底：現價漲到 stopPrice（SHORT倉漲到止損價）
+                        if current_price >= stop:
+                            should_fill = True
 
             if should_fill:
                 await self._simulate_fill(
