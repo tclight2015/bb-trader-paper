@@ -24,11 +24,11 @@ LIVE_WS   = "wss://fstream.binance.com"
 
 class PaperExchange(BaseExchange):
 
-    def __init__(self):
+    def __init__(self, leverage: int = 30):
         # Paper mode 不需要 API 金鑰
         self._order_id_counter = 10000
-        self._orders = {}       # order_id -> order dict
-        self._positions = {}    # symbol -> {positionAmt, entryPrice, ...}
+        self._orders = {}
+        self._positions = {}
         self._balance = {
             "total": 10000.0,
             "available": 10000.0,
@@ -36,9 +36,10 @@ class PaperExchange(BaseExchange):
             "margin_used": 0.0,
             "margin_ratio": 0.0,
         }
-        self._price_ref = None  # 由外部注入 state["price_cache"]
-        self._leverage_map = {}  # symbol -> leverage
-        self._fill_callbacks = []  # 成交回調，供 ws_user_stream 模擬使用
+        self._price_ref = None
+        self._default_leverage = leverage
+        self._leverage_map = {}
+        self._fill_callbacks = []
 
     def set_price_ref(self, price_cache: dict):
         """注入 price_cache 引用，讓 paper exchange 能讀到最新價格"""
@@ -84,7 +85,7 @@ class PaperExchange(BaseExchange):
         for sym, pos in self._positions.items():
             qty = abs(float(pos["positionAmt"]))
             entry = float(pos["entryPrice"])
-            lev = self._leverage_map.get(sym, 20)
+            lev = self._leverage_map.get(sym, self._default_leverage)
             current = self._get_price(sym) or entry
             # SHORT 倉：入場均價 - 現價 = 損益方向
             pnl = (entry - current) * qty
@@ -312,7 +313,7 @@ class PaperExchange(BaseExchange):
             order["status"] = "FILLED"
             order["executedQty"] = quantity
 
-        lev = self._leverage_map.get(symbol, 20)
+        lev = self._leverage_map.get(symbol, self._default_leverage)
         realized_pnl = 0.0
 
         if side == "SELL":

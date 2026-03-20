@@ -1445,7 +1445,8 @@ function startAutoRefresh() {
 async function loadLogs() {
   try {
     const type = document.getElementById('logTypeFilter').value;
-    const symbol = document.getElementById('logSymbolFilter').value.trim().toUpperCase();
+    let symbol = document.getElementById('logSymbolFilter').value.trim().toUpperCase();
+    if (symbol && !symbol.endsWith('USDT')) symbol += 'USDT';
     let url = '/api/logs?limit=200';
     if (type) url += '&event_type=' + type;
     if (symbol) url += '&symbol=' + symbol;
@@ -1571,7 +1572,7 @@ startAutoRefresh();
       <option value="ERROR">ERROR 錯誤</option>
     </select>
     <span class="filter-label">幣種</span>
-    <input class="filter-input" id="logSymbolFilter" type="text" placeholder="BTCUSDT" style="width:100px">
+    <input class="filter-input" id="logSymbolFilter" type="text" placeholder="BTC, ETH..." style="width:100px">
     <button class="btn btn-ghost btn-sm" onclick="loadLogs()">篩選</button>
     <button class="btn btn-primary btn-sm" onclick="exportLogs()">📥 下載日誌(JSON)</button>
   </div>

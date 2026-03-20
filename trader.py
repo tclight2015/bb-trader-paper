@@ -45,6 +45,8 @@ state = {
     "hidden_grids": {},
     "known_fills": {},
     "symbol_sell_count": {},    # symbol -> SELL 成交次數（開倉+加碼）
+    "symbol_total_margin": {},  # symbol -> 累積總保證金（每次SELL成交後累加）
+    "symbol_avg_entry": {},     # symbol -> 最新均入價（每次SELL成交後更新，平倉後清除）
     "symbol_setup_done": set(),
     "symbol_filters_cache": {},
 
@@ -65,7 +67,7 @@ def get_exchange(cfg) -> BaseExchange:
     """工廠函式：根據 config 建立對應交易所實例"""
     if cfg.get("paper_trading", False):
         from exchanges.paper import PaperExchange
-        ex = PaperExchange()
+        ex = PaperExchange(leverage=cfg.get("leverage", 30))
         ex.set_price_ref(state["price_cache"])
         return ex
     exchange_name = cfg.get("exchange", "binance")
@@ -261,6 +263,9 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
                     "margin_ratio": old.get("margin_ratio", 0),
                 }
                 state["balance_cache_time"] = time.time()
+
+        # 更新持倉快取，同時累計 margin_used
+        total_margin = 0.0
         for pos in update.get("P", []):
             sym = pos.get("s")
             amt = float(pos.get("pa", 0))
@@ -268,12 +273,26 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
                 if amt == 0:
                     state["_binance_positions_cache"].pop(sym, None)
                 else:
+                    im = float(pos.get("iw", 0))  # initialMargin（幣安 ACCOUNT_UPDATE 有此欄位）
                     state["_binance_positions_cache"][sym] = {
                         "qty": abs(amt),
                         "avg_entry": float(pos.get("ep", 0)),
                         "unrealized_pnl": float(pos.get("up", 0)),
-                        "initial_margin": 0,
+                        "initial_margin": im,
                     }
+                    total_margin += im
+
+        # 若有持倉更新，同步 margin_used 到 balance_cache
+        if update.get("P") and state["balance_cache"]:
+            # 重算所有持倉的 margin_used
+            all_margin = sum(
+                p.get("initial_margin", 0)
+                for p in state["_binance_positions_cache"].values()
+            )
+            state["balance_cache"]["margin_used"] = round(all_margin, 4)
+            total = state["balance_cache"]["total"]
+            if total > 0:
+                state["balance_cache"]["margin_ratio"] = round(all_margin / total * 100, 2)
 
     elif event == "ORDER_TRADE_UPDATE":
         order = data.get("o", {})
@@ -306,8 +325,21 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
                   })
 
         if side == "SELL" and status == "FILLED":
-            # 累計開倉/加碼次數
             state["symbol_sell_count"][symbol] = state["symbol_sell_count"].get(symbol, 0) + 1
+            # 累計總保證金
+            balance = get_balance_cached()
+            if balance and balance.get("total", 0) > 0:
+                cfg_now = load_config()
+                notional = fill_price * fill_qty
+                lev = cfg_now.get("leverage", 30)
+                margin_this_fill = notional / lev
+                state["symbol_total_margin"][symbol] = (
+                    state["symbol_total_margin"].get(symbol, 0) + margin_this_fill
+                )
+            # 同步均入價（從持倉快取取最新值）
+            pos_cache = state["_binance_positions_cache"].get(symbol, {})
+            if pos_cache.get("avg_entry", 0) > 0:
+                state["symbol_avg_entry"][symbol] = pos_cache["avg_entry"]
             update_hidden_grids(symbol, fill_price, cfg)
             await asyncio.sleep(0.5)
             await place_tp_sl(exchange, cfg, symbol)
@@ -325,10 +357,16 @@ async def handle_close_fill(exchange: BaseExchange, cfg: dict, symbol: str,
         return
 
     cached = state["_binance_positions_cache"].get(symbol, {})
-    avg_entry = cached.get("avg_entry", close_price)
-    margin = cached.get("initial_margin", 0)
+    # 優先用 SELL 成交時記錄的均入價，快取可能已被清空
+    avg_entry = (state["symbol_avg_entry"].get(symbol)
+                 or cached.get("avg_entry")
+                 or close_price)
+    # 用累積總保證金計算 roe_pct（所有開倉+加碼的合計）
+    total_margin = state["symbol_total_margin"].get(symbol, 0)
+    if total_margin <= 0:
+        total_margin = cached.get("initial_margin", 0)
     pnl = realized_pnl
-    roe_pct = (pnl / margin * 100) if margin > 0 else 0
+    roe_pct = (pnl / total_margin * 100) if total_margin > 0 else 0
     order_count = state["symbol_sell_count"].get(symbol, 1)
 
     if avg_entry > 0 and close_price < avg_entry:
@@ -340,7 +378,7 @@ async def handle_close_fill(exchange: BaseExchange, cfg: dict, symbol: str,
 
     record_trade_close(
         symbol=symbol, avg_entry=avg_entry, close_price=close_price,
-        total_qty=qty, total_margin=margin, total_pnl=pnl,
+        total_qty=qty, total_margin=total_margin, total_pnl=pnl,
         roe_pct=roe_pct, close_reason=close_reason,
         exchange=exchange.name, order_count=order_count
     )
@@ -348,7 +386,7 @@ async def handle_close_fill(exchange: BaseExchange, cfg: dict, symbol: str,
     candidate_info = next((c for c in state["candidate_pool"] if c["symbol"] == symbol), {})
     analytics_id = add_trade_analytics(
         symbol=symbol, avg_entry=avg_entry, close_price=close_price,
-        total_qty=qty, total_margin=margin, total_pnl=pnl,
+        total_qty=qty, total_margin=total_margin, total_pnl=pnl,
         roe_pct=roe_pct, close_reason=close_reason,
         market_snapshot=candidate_info, exchange=exchange.name
     )
@@ -693,6 +731,8 @@ def _clear_symbol_state(symbol: str):
     state["triggered_symbols"].discard(symbol)
     state["symbol_open_paused"].discard(symbol)
     state["symbol_sell_count"].pop(symbol, None)
+    state["symbol_total_margin"].pop(symbol, None)
+    state["symbol_avg_entry"].pop(symbol, None)
     state["margin_pause"] = False
 
 
