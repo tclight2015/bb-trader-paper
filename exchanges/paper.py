@@ -166,8 +166,20 @@ class PaperExchange(BaseExchange):
     # ===== 下單（本地模擬）=====
 
     async def place_limit_order(self, symbol: str, side: str, quantity: float,
-                                price: float, reduce_only: bool = False) -> dict:
+                                price: float, reduce_only: bool = False,
+                                intent: str = "") -> dict:
+        """
+        intent: 'tp'=止盈（BUY掛在現價下方，跌到成交）
+                'sl'=止損（BUY掛在現價上方，漲到成交）
+                ''=自動判斷（SELL一律為開倉）
+        """
         order_id = self._next_order_id()
+        current_price = self._get_price(symbol) or price
+
+        # 自動推斷 intent
+        if not intent and side == "BUY":
+            intent = "tp" if price < current_price else "sl"
+
         order = {
             "orderId": order_id,
             "symbol": symbol,
@@ -179,16 +191,14 @@ class PaperExchange(BaseExchange):
             "status": "NEW",
             "reduceOnly": reduce_only,
             "stopPrice": None,
+            "intent": intent,
             "time": int(time.time() * 1000),
         }
         self._orders[order_id] = order
-        logger.info(f"[PAPER] 限價單 #{order_id} {symbol} {side} @ {price} qty={quantity}")
+        logger.info(f"[PAPER] 限價單 #{order_id} {symbol} {side} @ {price} qty={quantity} intent={intent}")
 
-        # 掛單後立即檢查是否應該成交
-        # 只對 SELL 單做：開倉是因現價已觸碰上軌，理應立即成交
-        # BUY 單（止盈/止損）不立即成交，必須等價格真正移動到目標
-        current_price = self._get_price(symbol)
-        if current_price and side == "SELL" and current_price >= price:
+        # 只對 SELL 單做立即成交檢查（開倉觸碰上軌）
+        if side == "SELL" and current_price >= price:
             await self._simulate_fill(order_id, symbol, side, quantity, price, reduce_only)
             return {
                 "orderId": order_id, "symbol": symbol,
@@ -386,12 +396,20 @@ class PaperExchange(BaseExchange):
             should_fill = False
 
             if order_type == "LIMIT":
-                # SELL 限價：現價 >= 掛單價（做空，現價漲到掛單價）
-                if side == "SELL" and current_price >= order_price:
-                    should_fill = True
-                # BUY 限價：現價 <= 掛單價（平空，現價跌到止盈價）
-                elif side == "BUY" and current_price <= order_price:
-                    should_fill = True
+                if side == "SELL":
+                    # 開空：現價漲到掛單價
+                    if current_price >= order_price:
+                        should_fill = True
+                elif side == "BUY":
+                    intent = order.get("intent", "tp")
+                    if intent == "tp":
+                        # 止盈：現價跌到掛單價（下方）
+                        if current_price <= order_price:
+                            should_fill = True
+                    else:
+                        # 止損：現價漲到掛單價（上方）
+                        if current_price >= order_price:
+                            should_fill = True
 
             elif order_type == "STOP_MARKET":
                 stop = float(order.get("stopPrice", order_price))
