@@ -62,6 +62,8 @@ state = {
     "symbol_open_paused": set(),   # 因價格上漲暫停加碼的幣種（可自動恢復）
     "ws_price_connected": False,
     "ws_user_connected": False,
+
+    "upper_1m_cache": {},       # symbol -> {"upper": float, "ts": float}，1分K上軌快取
 }
 
 
@@ -143,6 +145,43 @@ def get_cached_price(symbol: str) -> float | None:
 
 def get_balance_cached() -> dict | None:
     return state["balance_cache"]
+
+
+# ===== 1分K上軌批次更新 =====
+
+def _calc_bb_upper(klines: list, period: int = 20, std_mult: float = 2.0) -> float | None:
+    if not klines or len(klines) < period:
+        return None
+    closes = [float(k[4]) for k in klines]
+    window = closes[-period:]
+    mean = sum(window) / period
+    std = math.sqrt(sum((x - mean) ** 2 for x in window) / period)
+    return mean + std_mult * std
+
+
+async def refresh_upper_1m(exchange: BaseExchange, symbols: list):
+    """批次並發拉1分K，更新 upper_1m_cache（每輪主循環呼叫，10秒一次）"""
+    if not symbols:
+        return
+
+    async def fetch_one(sym):
+        try:
+            klines = await exchange.get_klines(sym, "1m", limit=25)
+            upper = _calc_bb_upper(klines)
+            if upper:
+                state["upper_1m_cache"][sym] = {"upper": upper, "ts": time.time()}
+        except Exception as e:
+            logger.debug(f"1分K上軌更新失敗 {sym}: {e}")
+
+    await asyncio.gather(*[fetch_one(sym) for sym in symbols])
+
+
+def get_upper_1m(symbol: str) -> float | None:
+    """取得1分K布林上軌快取值"""
+    entry = state["upper_1m_cache"].get(symbol)
+    if entry:
+        return entry["upper"]
+    return None
 
 
 # ===== WebSocket: 價格推送 =====
@@ -1033,6 +1072,10 @@ async def trading_loop():
                 state["candidate_pool"] = candidates
                 state["last_pool_scan"] = time.time()
 
+            # 2.5 批次更新1分K上軌（候選池 + 現有持倉）
+            all_watch_syms = list({c["symbol"] for c in state["candidate_pool"]} | open_syms)
+            await refresh_upper_1m(exchange, all_watch_syms)
+
             # 3. 候選池開倉監控
             if not state["paused"] and not state["margin_pause"]:
                 current_open_count = len(open_syms)
@@ -1043,14 +1086,15 @@ async def trading_loop():
                     if not current_price:
                         continue
 
-                    upper = candidate["upper_15m"]
+                    # 開倉判斷使用1分K上軌，fallback到15分K上軌
+                    upper = get_upper_1m(sym) or candidate["upper_15m"]
                     already_has_position = sym in open_syms
                     at_max = not already_has_position and current_open_count >= cfg["max_symbols"]
 
                     # 觸碰上軌開倉
                     if current_price >= upper * 0.9995:
                         if sym not in state["triggered_symbols"]:
-                            write_log("TRIGGER", f"觸碰上軌 price={current_price} upper={upper}", symbol=sym)
+                            write_log("TRIGGER", f"觸碰上軌(1m) price={current_price} upper_1m={upper}", symbol=sym)
                             state["triggered_symbols"].add(sym)
                             if not at_max:
                                 success = await try_open_position(exchange, cfg, sym, upper, "UPPER")
@@ -1088,7 +1132,7 @@ async def trading_loop():
         except Exception as e:
             logger.error(f"主循環錯誤: {e}", exc_info=True)
 
-        await asyncio.sleep(10)
+        await asyncio.sleep(3)
 
 
 def start_trading_loop():

@@ -27,7 +27,7 @@ DEFAULT_CONFIG = {
     # === 止盈止損（基於價格幅度%，與槓桿無關）===
     "take_profit_price_pct": 1.0,      # 止盈：SHORT價格下跌X%，1.0 = 跌1%止盈
     "force_close_price_pct": 3.0,      # 止損：SHORT價格上漲X%，3.0 = 漲3%止損
-    "tp_limit_pct": 50,                # 止盈止損拆單：限價單佔%（剩餘為Stop-Market）
+    "tp_limit_pct": 100,               # 止盈止損拆單：限價單佔%（剩餘為Stop-Market）
 
     # === 開倉保護（基於本金%）===
     "pause_open_rise_pct": 2.0,         # 暫停對該幣加碼：現價比均入價上漲X%（可恢復）
