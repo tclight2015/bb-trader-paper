@@ -48,6 +48,7 @@ state = {
     "symbol_total_margin": {},  # symbol -> 累積總保證金（每次SELL成交後累加）
     "symbol_avg_entry": {},     # symbol -> 最新均入價（每次SELL成交後更新，平倉後清除）
     "symbol_realized_pnl": {},  # symbol -> 累積已實現損益（分批平倉時累加，完全平倉後記DB）
+    "pending_open": set(),      # 已掛開倉單但尚未成交的幣種（防止超過 max_symbols）
     "symbol_setup_done": set(),
     "symbol_filters_cache": {},
 
@@ -327,6 +328,7 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
 
         if side == "SELL" and status == "FILLED":
             state["symbol_sell_count"][symbol] = state["symbol_sell_count"].get(symbol, 0) + 1
+            state["pending_open"].discard(symbol)  # 已確認成交，移出待確認集合
             # 累計總保證金
             balance = get_balance_cached()
             if balance and balance.get("total", 0) > 0:
@@ -465,7 +467,8 @@ def calc_hidden_grids(entry_price, grid_spacing_pct, count=4):
 
 
 def update_hidden_grids(symbol: str, entry_price: float, cfg: dict):
-    grids = calc_hidden_grids(entry_price, cfg["grid_spacing_pct"], 4)
+    count = cfg.get("grid_count", 4)
+    grids = calc_hidden_grids(entry_price, cfg["grid_spacing_pct"], count)
     state["hidden_grids"][symbol] = grids
     logger.info(f"隱形網格更新 {symbol}: {grids}")
     write_log("HIDDEN_GRID_UPDATE", f"隱形網格重算，基準價={entry_price}",
@@ -484,6 +487,12 @@ async def check_and_place_hidden_grids(exchange: BaseExchange, cfg: dict, symbol
         return
     balance = get_balance_cached()
     if not balance:
+        return
+
+    # 檢查單幣加碼次數上限
+    max_orders = cfg.get("max_orders_per_symbol", 20)
+    current_count = state["symbol_sell_count"].get(symbol, 0)
+    if current_count >= max_orders:
         return
 
     notional = get_notional(cfg, balance["total"])
@@ -620,7 +629,16 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
         return False
 
     open_syms = set(state["_binance_positions_cache"].keys())
-    if symbol not in open_syms and len(open_syms) >= cfg["max_symbols"]:
+    # 加上 pending_open：已掛單但尚未成交的幣種也計入持倉數
+    effective_open = open_syms | (state["pending_open"] - open_syms)
+    if symbol not in effective_open and len(effective_open) >= cfg["max_symbols"]:
+        return False
+
+    # 檢查單幣加碼次數上限
+    max_orders = cfg.get("max_orders_per_symbol", 20)
+    current_count = state["symbol_sell_count"].get(symbol, 0)
+    if current_count >= max_orders:
+        write_log("BLOCKED", f"已達最大加碼次數({current_count}/{max_orders})", symbol=symbol)
         return False
 
     balance = get_balance_cached()
@@ -655,6 +673,9 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
         return False
 
     logger.info(f"✅ 掛單 {symbol} @ {price} qty={qty} trigger={trigger_type}")
+    # 新幣種掛單成功，加入 pending_open 防止同輪循環重複開倉超過 max_symbols
+    if symbol not in state["_binance_positions_cache"]:
+        state["pending_open"].add(symbol)
     candidate_info = next((c for c in state["candidate_pool"] if c["symbol"] == symbol), {})
     write_log("ORDER", f"掛限價空單 @ {price} [{trigger_type}]", symbol=symbol,
               detail={"order_id": str(result["orderId"]), "price": price, "qty": qty,
@@ -674,12 +695,19 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
 
 async def close_symbol(exchange: BaseExchange, cfg: dict, symbol: str, reason: str = "TP"):
     logger.info(f"平倉 {symbol} reason={reason}")
+
+    # 先取持倉資料（必須在 place_market_order 之前，paper mode 成交後持倉會清空）
     pos = await get_position_rest(exchange, symbol)
+    # Paper mode fallback：get_position_rest 可能已清空，改從快取取
+    if not pos:
+        cached = state["_binance_positions_cache"].get(symbol)
+        if cached and cached.get("qty", 0) > 0:
+            pos = cached
 
     if pos:
         total_qty = pos["qty"]
-        avg_entry = pos["avg_entry"]
-        margin = pos["initial_margin"]
+        avg_entry = pos.get("avg_entry", state["symbol_avg_entry"].get(symbol, 0))
+        margin = state["symbol_total_margin"].get(symbol, 0) or pos.get("initial_margin", 0)
 
         result = await exchange.place_market_order(symbol, "BUY", total_qty, reduce_only=True)
         actual_close_price = None
@@ -692,13 +720,16 @@ async def close_symbol(exchange: BaseExchange, cfg: dict, symbol: str, reason: s
             await asyncio.sleep(0.5)
             actual_close_price = get_cached_price(symbol) or avg_entry
 
-        pnl = (avg_entry - actual_close_price) * total_qty
-        roe_pct = (pnl / margin * 100) if margin > 0 else 0
+        # 累計已實現損益（手動/強制平倉也要加總）
+        pnl_from_market = (avg_entry - actual_close_price) * total_qty
+        accumulated_pnl = state["symbol_realized_pnl"].get(symbol, 0)
+        total_pnl = accumulated_pnl + pnl_from_market
+        roe_pct = (total_pnl / margin * 100) if margin > 0 else 0
         order_count = state["symbol_sell_count"].get(symbol, 1)
 
         record_trade_close(
             symbol=symbol, avg_entry=avg_entry, close_price=actual_close_price,
-            total_qty=total_qty, total_margin=margin, total_pnl=pnl,
+            total_qty=total_qty, total_margin=margin, total_pnl=total_pnl,
             roe_pct=roe_pct, close_reason=reason, exchange=exchange.name,
             order_count=order_count
         )
@@ -706,14 +737,14 @@ async def close_symbol(exchange: BaseExchange, cfg: dict, symbol: str, reason: s
         candidate_info = next((c for c in state["candidate_pool"] if c["symbol"] == symbol), {})
         analytics_id = add_trade_analytics(
             symbol=symbol, avg_entry=avg_entry, close_price=actual_close_price,
-            total_qty=total_qty, total_margin=margin, total_pnl=pnl,
+            total_qty=total_qty, total_margin=margin, total_pnl=total_pnl,
             roe_pct=roe_pct, close_reason=reason,
             market_snapshot=candidate_info, exchange=exchange.name
         )
         if analytics_id:
             asyncio.create_task(ml_fill_task(exchange, analytics_id, symbol))
 
-        write_log("CLOSE", f"平倉完成 PnL={pnl:.4f} ROE={roe_pct:.2f}%",
+        write_log("CLOSE", f"平倉完成 PnL={total_pnl:.4f} ROE={roe_pct:.2f}%",
                   symbol=symbol, detail={"avg_entry": avg_entry,
                                          "close_price": actual_close_price,
                                          "total_pnl": round(pnl, 4),
@@ -737,6 +768,7 @@ def _clear_symbol_state(symbol: str):
     state["_binance_positions_cache"].pop(symbol, None)
     state["triggered_symbols"].discard(symbol)
     state["symbol_open_paused"].discard(symbol)
+    state["pending_open"].discard(symbol)
     state["symbol_sell_count"].pop(symbol, None)
     state["symbol_total_margin"].pop(symbol, None)
     state["symbol_avg_entry"].pop(symbol, None)
@@ -947,6 +979,8 @@ async def trading_loop():
     # Paper mode：保存初始 exchange 實例，主循環重用（避免每輪重建丟失持倉）
     from exchanges.paper import PaperExchange
     _paper_exchange = exchange if isinstance(exchange, PaperExchange) else None
+    if _paper_exchange is not None:
+        state["_paper_exchange"] = _paper_exchange  # 供 app.py 強制平倉使用
 
     while True:
         try:

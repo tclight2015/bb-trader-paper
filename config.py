@@ -16,9 +16,11 @@ DEFAULT_CONFIG = {
 
     # === 網格設定 ===
     "grid_spacing_pct": 0.15,          # 網格間距%（隱形網格間距）
+    "grid_count": 4,                   # 每次重算後建立的隱形網格數量
 
     # === 持倉管理 ===
     "max_symbols": 3,                   # 最多同時持倉幣種數
+    "max_orders_per_symbol": 20,        # 每個幣種最多加碼次數（含首次開倉）
     "candidate_pool_size": 10,          # 候選監控池大小
     "pre_scan_size": 20,               # 從15分K取前N個再篩候選池
 

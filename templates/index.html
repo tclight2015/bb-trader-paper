@@ -1360,8 +1360,10 @@ const CONFIG_LABELS = {
   pause_open_rise_pct: ['暫停加碼漲幅 %', '持倉幣種現價比均入價上漲超過此%，停止加碼（價格回落自動恢復）'],
   force_close_capital_pct: ['強制平倉（本金-%）', '單幣種本金虧損此%時強制市價全平（負數）'],
   margin_usage_limit_pct: ['保證金使用率上限 %', '超過此值停止開新倉'],
-  grid_spacing_pct: ['網格間距 %', ''],
+  grid_spacing_pct: ['網格間距 %', '每個隱形網格之間的價格間距'],
+  grid_count: ['隱形網格數量', '每次成交後向下建立幾個隱形網格'],
   max_symbols: ['最多持倉幣種數', ''],
+  max_orders_per_symbol: ['每幣最大加碼次數', '含首次開倉，達到上限後停止對該幣加碼'],
   candidate_pool_size: ['候選監控池大小', ''],
   pre_scan_size: ['預掃描取前N個', '從15分K篩選後再取前N個進候選池'],
   min_volume_usdt: ['最低24H成交量（USDT）', '避免滑價'],
@@ -1378,8 +1380,8 @@ const CONFIG_SECTIONS = {
   '開單設定': ['capital_per_order_pct', 'leverage'],
   '止盈止損': ['take_profit_price_pct', 'force_close_price_pct', 'tp_limit_pct', 'pause_open_rise_pct', 'force_close_capital_pct'],
   '保護機制': ['margin_usage_limit_pct'],
-  '網格設定': ['grid_spacing_pct'],
-  '持倉管理': ['max_symbols', 'candidate_pool_size', 'pre_scan_size', 'candidate_pool_refresh_min'],
+  '網格設定': ['grid_spacing_pct', 'grid_count'],
+  '持倉管理': ['max_symbols', 'max_orders_per_symbol', 'candidate_pool_size', 'pre_scan_size', 'candidate_pool_refresh_min'],
   '篩選條件': ['min_volume_usdt', 'max_dist_to_upper_pct', 'max_dist_1h_upper_pct', 'min_band_width_pct', 'prev_high_lookback', 'volume_spike_multiplier', 'single_candle_max_rise_pct'],
 };
 
@@ -1566,15 +1568,25 @@ startAutoRefresh();
     <select class="filter-select" id="logTypeFilter" onchange="loadLogs()">
       <option value="">全部</option>
       <option value="SCAN">SCAN 掃描</option>
-      <option value="FILTER">FILTER 過濾</option>
       <option value="TRIGGER">TRIGGER 觸價</option>
       <option value="ORDER">ORDER 下單</option>
+      <option value="FILL">FILL 成交（含止盈止損）</option>
       <option value="BLACK_K">BLACK_K 黑K</option>
-      <option value="TP">TP 止盈</option>
-      <option value="FORCE_CLOSE">FORCE_CLOSE 強平</option>
-      <option value="ROE_PAUSE">ROE_PAUSE 暫停</option>
-      <option value="ROE_RESUME">ROE_RESUME 恢復</option>
+      <option value="HIDDEN_GRID_UPDATE">HIDDEN_GRID_UPDATE 網格重算</option>
+      <option value="GRID_PLACE">GRID_PLACE 網格掛出</option>
+      <option value="TP_SL_ORDER">TP_SL_ORDER 止盈止損更新</option>
+      <option value="CLOSE">CLOSE 平倉完成</option>
+      <option value="PAUSE_OPEN">PAUSE_OPEN 暫停加碼</option>
+      <option value="RESUME_OPEN">RESUME_OPEN 恢復加碼</option>
+      <option value="BLOCKED">BLOCKED 持倉已滿/加碼上限</option>
+      <option value="MARGIN_PAUSE">MARGIN_PAUSE 保證金暫停</option>
+      <option value="ROE_FORCE">ROE_FORCE 強制平倉</option>
       <option value="ERROR">ERROR 錯誤</option>
+      <option value="START">START 啟動</option>
+      <option value="STOP">STOP 停止</option>
+      <option value="PAUSE">PAUSE 暫停</option>
+      <option value="RESUME">RESUME 恢復</option>
+      <option value="RESET">RESET 重置</option>
     </select>
     <span class="filter-label">幣種</span>
     <input class="filter-input" id="logSymbolFilter" type="text" placeholder="BTC, ETH..." style="width:100px">

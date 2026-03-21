@@ -18,6 +18,9 @@
 | v4.2 | Paper mode 大量 bug 修正（見已解決 Bug）；儀表板新增功能 | 見「已知設計遺漏」 |
 | v4.3 | 修正 roe_pct 用累積總保證金計算；修正 avg_entry 平倉時可能為空；Paper mode 槓桿從 config 讀取 | — |
 | v4.4 | 修正分批平倉 PnL 只記最後一張；累積 `symbol_realized_pnl` 確保全部批次都加總 | — |
+| v4.5 | 新增 `max_orders_per_symbol`（每幣最大加碼次數，預設20）；開倉和隱形網格都檢查 | — |
+| v4.6 | 隱形網格數量 `grid_count` 改為可調整（預設4）；不再寫死 | — |
+| v4.7 | 修正持倉數超過 max_symbols：加入 `pending_open` 追蹤已掛單但未成交的幣種；強制平倉記錄修正 | — |
 
 ---
 
@@ -87,6 +90,7 @@ requirements.txt
 | 欄位 | 預設值 | 實作位置 | 說明 |
 |------|--------|---------|------|
 | `grid_spacing_pct` | 0.15 | `trader.py: calc_hidden_grids()` | 隱形網格間距% |
+| `grid_count` | 4 | `trader.py: update_hidden_grids()` | 每次成交後建立的隱形網格數量 |
 
 ### 止盈止損
 | 欄位 | 預設值 | 實作位置 | 說明 |
@@ -106,6 +110,7 @@ requirements.txt
 | 欄位 | 預設值 | 實作位置 | 說明 |
 |------|--------|---------|------|
 | `max_symbols` | 3 | `trader.py: try_open_position()` / 主循環 | 最多同時持倉幣種數 |
+| `max_orders_per_symbol` | 20 | `trader.py: try_open_position()` / `check_and_place_hidden_grids()` | 每個幣種最多加碼次數（含首次開倉），達上限停止加碼 |
 | `candidate_pool_size` | 10 | `app.py: run_scan()` | 候選監控池大小 |
 | `pre_scan_size` | 20 | `app.py: run_scan()` | 從15分K篩選後取前N個進候選池 |
 | `candidate_pool_refresh_min` | 3 | `trader.py: trading_loop()` | 候選池更新間隔（分鐘） |
@@ -186,6 +191,7 @@ state = {
     "symbol_total_margin": dict,         # symbol -> 累積總保證金（每次SELL成交後累加，平倉後清除）
     "symbol_avg_entry": dict,            # symbol -> 最新均入價（每次SELL成交後從持倉快取更新，平倉後清除）
     "symbol_realized_pnl": dict,         # symbol -> 累積已實現損益（每次BUY成交後累加，完全平倉記DB後清除）
+    "pending_open": set,                  # 已掛開倉單但尚未成交的幣種（計入持倉數防止超過 max_symbols）
     "candidate_pool": list,             # 當前候選監控池
     "scanner_latest_result": list,      # 掃描器最新結果（供 trader 讀取）
     "tp_sl_orders": dict,               # symbol -> {tp_limit, tp_stop, sl_limit, sl_stop}

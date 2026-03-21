@@ -304,7 +304,8 @@ def api_positions():
 @app.route("/api/close/<symbol>", methods=["POST"])
 def api_close_symbol(symbol):
     cfg = load_config()
-    client = get_client(cfg)
+    # Paper mode 必須用主循環的同一個實例，不能重建（重建會是空持倉）
+    client = state.get("_paper_exchange") or get_client(cfg)
 
     async def do_close():
         await close_symbol(client, cfg, symbol, reason="MANUAL")
@@ -320,7 +321,7 @@ def api_close_symbol(symbol):
 def api_reset():
     from trader import reset_system
     cfg = load_config()
-    client = get_client(cfg)
+    client = state.get("_paper_exchange") or get_client(cfg)
 
     async def do_reset():
         return await reset_system(client, cfg)
@@ -385,8 +386,8 @@ def api_config_set():
     cfg = load_config()
     data = request.json
     allowed_keys = [
-        "capital_per_order_pct", "leverage", "grid_spacing_pct",
-        "max_symbols", "candidate_pool_size", "pre_scan_size",
+        "capital_per_order_pct", "leverage", "grid_spacing_pct", "grid_count",
+        "max_symbols", "max_orders_per_symbol", "candidate_pool_size", "pre_scan_size",
         "take_profit_price_pct", "force_close_price_pct",
         "tp_limit_pct",
         "pause_open_rise_pct", "force_close_capital_pct",
