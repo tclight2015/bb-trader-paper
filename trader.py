@@ -185,8 +185,9 @@ async def ws_user_stream(exchange: BaseExchange, cfg: dict):
     from exchanges.paper import PaperExchange
     if isinstance(exchange, PaperExchange):
         async def paper_fill_handler(event):
-            await handle_user_event(event, cfg, exchange)
-            # 成交後立刻同步 paper 持倉到 state（不等下一輪主循環）
+            # 先同步 paper 持倉到 state，再呼叫 handle_user_event
+            # 這樣 handle_close_fill 檢查 pos_after 時已是成交後的最新狀態
+            # 避免誤判「部分平倉」導致完全平倉後不記錄DB
             paper_pos = await exchange.get_positions()
             state["_binance_positions_cache"] = {
                 p["symbol"]: {
@@ -199,6 +200,7 @@ async def ws_user_stream(exchange: BaseExchange, cfg: dict):
             bal = await exchange.get_balance()
             if bal:
                 state["balance_cache"] = bal
+            await handle_user_event(event, cfg, exchange)
         exchange.register_fill_callback(paper_fill_handler)
         state["ws_user_connected"] = True
         logger.info("✅ [PAPER] User Data 本地模擬已就緒")
@@ -747,7 +749,7 @@ async def close_symbol(exchange: BaseExchange, cfg: dict, symbol: str, reason: s
         write_log("CLOSE", f"平倉完成 PnL={total_pnl:.4f} ROE={roe_pct:.2f}%",
                   symbol=symbol, detail={"avg_entry": avg_entry,
                                          "close_price": actual_close_price,
-                                         "total_pnl": round(pnl, 4),
+                                         "total_pnl": round(total_pnl, 4),
                                          "roe_pct": round(roe_pct, 2),
                                          "reason": reason})
 
@@ -1062,8 +1064,8 @@ async def trading_loop():
                         if sym not in open_syms:
                             state["triggered_symbols"].discard(sym)
 
-                    # 突破上軌：黑K偵測
-                    if current_price > upper and sym not in state["black_k_targets"]:
+                    # 突破上軌：黑K偵測（只在已持倉時追加碼，不作為第一單觸發）
+                    if current_price > upper and sym not in state["black_k_targets"] and sym in open_syms:
                         target = await check_black_k(exchange, sym)
                         if target:
                             state["black_k_targets"][sym] = target

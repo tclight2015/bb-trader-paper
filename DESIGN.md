@@ -21,6 +21,7 @@
 | v4.5 | 新增 `max_orders_per_symbol`（每幣最大加碼次數，預設20）；開倉和隱形網格都檢查 | — |
 | v4.6 | 隱形網格數量 `grid_count` 改為可調整（預設4）；不再寫死 | — |
 | v4.7 | 修正持倉數超過 max_symbols：加入 `pending_open` 追蹤已掛單但未成交的幣種；強制平倉記錄修正 | — |
+| v4.8 | 黑K邏輯限制為已持倉才觸發；paper_fill_handler 持倉同步順序修正（先同步再handle_user_event）；`close_symbol` pnl 變數名稱 bug；`max_symbols` 預設改為 1 | — |
 
 ---
 
@@ -109,7 +110,7 @@ requirements.txt
 ### 持倉管理
 | 欄位 | 預設值 | 實作位置 | 說明 |
 |------|--------|---------|------|
-| `max_symbols` | 3 | `trader.py: try_open_position()` / 主循環 | 最多同時持倉幣種數 |
+| `max_symbols` | 1 | `trader.py: try_open_position()` / 主循環 | 最多同時持倉幣種數 |
 | `max_orders_per_symbol` | 20 | `trader.py: try_open_position()` / `check_and_place_hidden_grids()` | 每個幣種最多加碼次數（含首次開倉），達上限停止加碼 |
 | `candidate_pool_size` | 10 | `app.py: run_scan()` | 候選監控池大小 |
 | `pre_scan_size` | 20 | `app.py: run_scan()` | 從15分K篩選後取前N個進候選池 |
@@ -164,6 +165,9 @@ prev_high_score = count_score + avg_excess * 0.1
 | `avg_entry` 平倉時可能為空 | v1-v4.2 | v4.3 | 平倉時 `_binance_positions_cache` 已清空，`avg_entry` 退回 `close_price`，PnL 顯示 0；改用 `symbol_avg_entry` 在每次 SELL 成交時存下均入價 |
 | Paper mode 預設槓桿寫死 20 | v4.1-v4.2 | v4.3 | `PaperExchange` 預設槓桿 20 但 config 是 30，保證金計算偏高；改為從 `cfg["leverage"]` 傳入 |
 | 分批平倉 PnL 只記最後一張 | v1-v4.3 | v4.4 | `tp_limit_pct=50` 時止盈分兩張，限價單那張的 PnL 沒有被記入；改用 `symbol_realized_pnl` 累積所有批次，完全平倉後才寫DB |
+| 黑K邏輯在無持倉時觸發 | v1-v4.7 | v4.8 | 候選池循環中黑K偵測未檢查是否已持倉，可能以黑K當第一單；加入 `and sym in open_syms` 限制只在已持倉時追蹤 |
+| Paper mode 平倉不記DB | v4.1-v4.7 | v4.8 | `paper_fill_handler` 先呼叫 `handle_user_event` 後才同步持倉，導致 `handle_close_fill` 誤判持倉未清空，跳去重掛止盈止損；改為先同步持倉再呼叫 `handle_user_event` |
+| `close_symbol` 中 `pnl` 未定義 | v1-v4.7 | v4.8 | `write_log` 中誤用 `pnl` 變數，應為 `total_pnl`；修正變數名稱 |
 
 ---
 
