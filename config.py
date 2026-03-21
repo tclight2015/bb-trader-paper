@@ -30,7 +30,7 @@ DEFAULT_CONFIG = {
     "tp_limit_pct": 100,               # 止盈止損拆單：限價單佔%（剩餘為Stop-Market）
 
     # === 開倉保護（基於本金%）===
-    "pause_open_rise_pct": 2.0,         # 暫停對該幣加碼：現價比均入價上漲X%（可恢復）
+    "pause_open_rise_pct": 999.0,       # 暫停對該幣加碼：現價比均入價上漲X%（可恢復）
     "force_close_capital_pct": -90.0,  # 強制平倉：單幣本金虧X%
 
     # === 保證金水位保護 ===

@@ -1108,8 +1108,8 @@ async def trading_loop():
                         if sym not in open_syms:
                             state["triggered_symbols"].discard(sym)
 
-                    # 突破上軌：黑K偵測（只在已持倉時追加碼，不作為第一單觸發）
-                    if current_price > upper and sym not in state["black_k_targets"] and sym in open_syms:
+                    # 突破上軌：黑K偵測（已持倉時持續偵測，不限制現價位置）
+                    if sym in open_syms and sym not in state["black_k_targets"]:
                         target = await check_black_k(exchange, sym)
                         if target:
                             state["black_k_targets"][sym] = target
