@@ -21,12 +21,14 @@ DEFAULT_CONFIG = {
     # === 持倉管理 ===
     "max_symbols": 1,                   # 最多同時持倉幣種數
     "max_orders_per_symbol": 20,        # 每個幣種最多加碼次數（含首次開倉）
+    "scale_up_after_order": 10,         # 第幾筆成交後開始放大每單保證金
+    "scale_up_multiplier": 1.0,         # 放大倍數（1.0=停用）
     "candidate_pool_size": 10,          # 候選監控池大小
     "pre_scan_size": 20,               # 從15分K取前N個再篩候選池
 
     # === 止盈止損（基於價格幅度%，與槓桿無關）===
     "take_profit_price_pct": 1.0,      # 止盈：SHORT價格下跌X%，1.0 = 跌1%止盈
-    "force_close_price_pct": 3.0,      # 止損：SHORT價格上漲X%，3.0 = 漲3%止損
+    "force_close_price_pct": 2.5,      # 止損：SHORT價格上漲X%，2.5 = 漲2.5%止損
     "tp_limit_pct": 100,               # 止盈止損拆單：限價單佔%（剩餘為Stop-Market）
 
     # === 開倉保護（基於本金%）===
@@ -46,6 +48,16 @@ DEFAULT_CONFIG = {
     # === 異常偵測 ===
     "volume_spike_multiplier": 3.0,    # 成交量異常倍數（超過均量N倍跳過）
     "single_candle_max_rise_pct": 1.0, # 單K最大漲幅%（超過此值不開倉）
+
+    # === 黑K濾網 ===
+    "black_k_min_body_pct": 0.5,       # 黑K實體最小幅度%（低於此值不觸發）
+    "black_k_require_below_upper": True, # 黑K最高點必須低於1分K上軌才觸發
+    "black_k_max_upper_slope_pct": 0.05, # 上軌每根K最大漲幅%（超過表示動能太強，不開空）
+    "black_k_upper_slope_lookback": 5,   # 計算上軌斜率的回看根數
+
+    # === 加碼放寬 ===
+    "extend_orders_max": 25,           # 虧損未達門檻時，可放寬加碼到幾筆
+    "extend_loss_pct": 15.0,           # 本金虧損在此%以內才適用放寬（正數，例如15=虧15%內）
 
     # === 系統設定 ===
     "system_running": True,

@@ -25,6 +25,12 @@
 | v4.9 | 開倉觸發改用1分K布林上軌（掃描器仍用15分K過濾候選池）；每輪主循環批次並發拉候選池+持倉幣的1分K，fallback到15分K上軌 | — |
 | v4.10 | 主循環 sleep 10秒→3秒（提升觸價精準度）；`tp_limit_pct` 預設改為100（全限價止盈） | — |
 | v4.11 | 修正黑K偵測條件：移除「現價>上軌」限制，改為已持倉就持續偵測（黑K確認後才啟動，跟現價位置無關）；`pause_open_rise_pct` 預設改為999（實際停用） | — |
+| v4.12 | 新增加碼遞增邏輯：`scale_up_after_order`（第幾筆成交後放大）、`scale_up_multiplier`（放大倍數）；以已成交筆數判斷，掛單時才套用，預設1.0停用 | — |
+| v4.13 | 黑K濾網：新增 `black_k_min_body_pct`（實體最小幅度%）和 `black_k_require_below_upper`（高點須低於1分K上軌）；防止強勢上漲型態誤觸黑K開空 | — |
+| v4.14 | 修正加碼超標bug（掛單前檢查已成交次數，防止隱形網格繞過上限）；新增加碼放寬條件（`extend_orders_max`/`extend_loss_pct`）；黑K斜率濾網（`black_k_max_upper_slope_pct`/`black_k_upper_slope_lookback`）；設定頁UI重寫（分色區塊分類，checkbox支援bool欄位）；止損預設改2.5% | — |
+| v4.15 | 修正平倉後隱形網格仍成交問題：`handle_close_fill` 平倉後逐一取消殘留 SELL 掛單，若已成交則補市價 BUY 平倉；`close_symbol`（手動/強制）維持取消全部掛單再平倉的原始邏輯 | — |
+| v4.16 | 修正黑K無限循環bug：開倉成功後不再 pop `black_k_last_k_time`，保留防重複機制，防止同一根K棒反覆觸發黑K開倉 | — |
+| v4.17 | 設定頁儲存時若 `grid_spacing_pct` 或 `grid_count` 有變更，自動對所有現有持倉取消舊網格掛單並以新設定重算 | — |
 
 ---
 
@@ -122,6 +128,8 @@ requirements.txt
 |------|--------|---------|------|
 | `max_symbols` | 1 | `trader.py: try_open_position()` / 主循環 | 最多同時持倉幣種數 |
 | `max_orders_per_symbol` | 20 | `trader.py: try_open_position()` / `check_and_place_hidden_grids()` | 每個幣種最多加碼次數（含首次開倉），達上限停止加碼 |
+| `scale_up_after_order` | 10 | `trader.py: try_open_position()` / `check_and_place_hidden_grids()` | 第幾筆成交後開始放大每單保證金 |
+| `scale_up_multiplier` | 1.0 | `trader.py: try_open_position()` / `check_and_place_hidden_grids()` | 放大倍數（1.0=停用） |
 | `candidate_pool_size` | 10 | `app.py: run_scan()` | 候選監控池大小 |
 | `pre_scan_size` | 20 | `app.py: run_scan()` | 從15分K篩選後取前N個進候選池 |
 | `candidate_pool_refresh_min` | 3 | `trader.py: trading_loop()` | 候選池更新間隔（分鐘） |

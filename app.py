@@ -387,7 +387,8 @@ def api_config_set():
     data = request.json
     allowed_keys = [
         "capital_per_order_pct", "leverage", "grid_spacing_pct", "grid_count",
-        "max_symbols", "max_orders_per_symbol", "candidate_pool_size", "pre_scan_size",
+        "max_symbols", "max_orders_per_symbol", "scale_up_after_order", "scale_up_multiplier",
+        "candidate_pool_size", "pre_scan_size",
         "take_profit_price_pct", "force_close_price_pct",
         "tp_limit_pct",
         "pause_open_rise_pct", "force_close_capital_pct",
@@ -396,12 +397,52 @@ def api_config_set():
         "max_dist_to_upper_pct", "max_dist_1h_upper_pct",
         "min_band_width_pct", "prev_high_lookback",
         "volume_spike_multiplier", "single_candle_max_rise_pct",
+        "black_k_min_body_pct", "black_k_require_below_upper",
+        "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback",
+        "extend_orders_max", "extend_loss_pct",
         "system_running"
     ]
+    grid_changed = any(k in data for k in ["grid_spacing_pct", "grid_count"])
     for k in allowed_keys:
         if k in data:
             cfg[k] = data[k]
     save_config(cfg)
+
+    # 若網格相關設定有變更，對所有現有持倉重算網格
+    if grid_changed:
+        from trader import update_hidden_grids, get_exchange, get_client
+        open_positions = state.get("_binance_positions_cache", {})
+        if open_positions:
+            exchange = state.get("_paper_exchange") or get_client(cfg)
+
+            async def refresh_grids():
+                for symbol, pos in open_positions.items():
+                    try:
+                        # 取消現有未成交的隱形網格掛單
+                        open_orders = await exchange.get_open_orders(symbol)
+                        sell_orders = [o for o in open_orders
+                                       if o.get("side") == "SELL"
+                                       and str(o.get("orderId")) not in
+                                       list((state.get("tp_sl_orders", {}).get(symbol, {})).values())]
+                        for order in sell_orders:
+                            try:
+                                await exchange.cancel_order(symbol, str(order["orderId"]))
+                            except Exception:
+                                pass
+                        # 用最新均入價重算網格
+                        avg_entry = pos.get("avg_entry", 0)
+                        if avg_entry > 0:
+                            update_hidden_grids(symbol, avg_entry, cfg)
+                            write_log("HIDDEN_GRID_UPDATE", f"設定變更後重算網格，基準價={avg_entry}",
+                                      symbol=symbol)
+                    except Exception as e:
+                        logger.error(f"重算網格失敗 {symbol}: {e}")
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(refresh_grids())
+            loop.close()
+
     return jsonify({"status": "ok"})
 
 

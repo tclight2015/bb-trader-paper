@@ -63,7 +63,7 @@ state = {
     "ws_price_connected": False,
     "ws_user_connected": False,
 
-    "upper_1m_cache": {},       # symbol -> {"upper": float, "ts": float}，1分K上軌快取
+    "upper_1m_cache": {},       # symbol -> {"upper": float, "ts": float, "history": [float,...]}，1分K上軌快取
 }
 
 
@@ -169,7 +169,12 @@ async def refresh_upper_1m(exchange: BaseExchange, symbols: list):
             klines = await exchange.get_klines(sym, "1m", limit=25)
             upper = _calc_bb_upper(klines)
             if upper:
-                state["upper_1m_cache"][sym] = {"upper": upper, "ts": time.time()}
+                entry = state["upper_1m_cache"].get(sym, {})
+                history = entry.get("history", [])
+                history.append(upper)
+                if len(history) > 10:  # 最多保留10筆歷史
+                    history = history[-10:]
+                state["upper_1m_cache"][sym] = {"upper": upper, "ts": time.time(), "history": history}
         except Exception as e:
             logger.debug(f"1分K上軌更新失敗 {sym}: {e}")
 
@@ -182,6 +187,26 @@ def get_upper_1m(symbol: str) -> float | None:
     if entry:
         return entry["upper"]
     return None
+
+
+def get_upper_1m_slope(symbol: str, lookback: int = 5) -> float | None:
+    """
+    計算1分K上軌斜率（每根K的平均漲幅%）
+    正值=上軌上漲，負值=上軌下跌
+    """
+    entry = state["upper_1m_cache"].get(symbol)
+    if not entry:
+        return None
+    history = entry.get("history", [])
+    if len(history) < lookback + 1:
+        return None
+    recent = history[-lookback - 1:]
+    start = recent[0]
+    end = recent[-1]
+    if start <= 0:
+        return None
+    slope = (end - start) / start * 100 / lookback  # 每根K平均漲幅%
+    return round(slope, 5)
 
 
 # ===== WebSocket: 價格推送 =====
@@ -446,6 +471,29 @@ async def handle_close_fill(exchange: BaseExchange, cfg: dict, symbol: str,
     write_log("CLOSE", f"平倉完成(WS) PnL={total_pnl:.4f}", symbol=symbol,
               detail={"avg_entry": avg_entry, "close_price": close_price,
                       "pnl": round(total_pnl, 4), "roe_pct": round(roe_pct, 2)})
+
+    # 取消殘留掛單（隱形網格 SELL 單），並補平已成交的
+    try:
+        open_orders = await exchange.get_open_orders(symbol)
+        sell_orders = [o for o in open_orders if o.get("side") == "SELL"]
+        accidental_qty = 0.0
+        for order in sell_orders:
+            oid = str(order["orderId"])
+            result = await exchange.cancel_order(symbol, oid)
+            # 取消失敗（-2011）= 已成交，需補市價平
+            if isinstance(result, dict) and result.get("code") == -2011:
+                qty = float(order.get("origQty", 0))
+                accidental_qty += qty
+                write_log("WARN", f"平倉後殘留SELL單已成交，補市價平 qty={qty}", symbol=symbol)
+        if accidental_qty > 0:
+            filters = state["symbol_filters_cache"].get(symbol, {})
+            step = filters.get("step_size", 0.001)
+            accidental_qty = align_qty(accidental_qty, step)
+            await exchange.place_market_order(symbol, "BUY", accidental_qty, reduce_only=True)
+            write_log("CLOSE", f"補市價平倉 qty={accidental_qty}", symbol=symbol)
+    except Exception as e:
+        logger.error(f"平倉後清理殘留掛單失敗 {symbol}: {e}")
+
     _clear_symbol_state(symbol)
 
 
@@ -530,13 +578,32 @@ async def check_and_place_hidden_grids(exchange: BaseExchange, cfg: dict, symbol
     if not balance:
         return
 
-    # 檢查單幣加碼次數上限
+    # 檢查單幣加碼次數上限（已成交 + 已掛出未成交網格數）
     max_orders = cfg.get("max_orders_per_symbol", 20)
-    current_count = state["symbol_sell_count"].get(symbol, 0)
+    filled_count = state["symbol_sell_count"].get(symbol, 0)
+    pending_grid_count = len(grids)  # 目前 hidden_grids 裡還有幾格待掛
+    # 放寬條件：虧損在 extend_loss_pct 內可加碼到 extend_max_orders
+    extend_max = cfg.get("extend_orders_max", max_orders)
+    extend_loss = cfg.get("extend_loss_pct", 0)
+    if extend_loss > 0:
+        pos = state["_binance_positions_cache"].get(symbol, {})
+        avg_entry = pos.get("avg_entry", 0)
+        current_price = get_cached_price(symbol) or avg_entry
+        if avg_entry > 0:
+            loss_pct = (current_price - avg_entry) / avg_entry * 100  # SHORT：上漲=虧損
+            if loss_pct <= extend_loss:  # 虧損未達門檻，使用放寬上限
+                max_orders = max(max_orders, extend_max)
+    current_count = filled_count
     if current_count >= max_orders:
         return
 
     notional = get_notional(cfg, balance["total"])
+    # 已成交筆數超過門檻後放大每單保證金
+    filled_count = state["symbol_sell_count"].get(symbol, 0)
+    scale_after = cfg.get("scale_up_after_order", 10)
+    scale_mult = cfg.get("scale_up_multiplier", 1.0)
+    if filled_count >= scale_after and scale_mult != 1.0:
+        notional = notional * scale_mult
     remaining = []
 
     for grid_price in grids:
@@ -678,6 +745,17 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
     # 檢查單幣加碼次數上限
     max_orders = cfg.get("max_orders_per_symbol", 20)
     current_count = state["symbol_sell_count"].get(symbol, 0)
+    # 放寬條件：虧損在 extend_loss_pct 內可放寬到 extend_orders_max
+    extend_max = cfg.get("extend_orders_max", max_orders)
+    extend_loss = cfg.get("extend_loss_pct", 0)
+    if extend_loss > 0:
+        pos = state["_binance_positions_cache"].get(symbol, {})
+        avg_entry = pos.get("avg_entry", 0)
+        current_price = get_cached_price(symbol) or avg_entry
+        if avg_entry > 0:
+            loss_pct = (current_price - avg_entry) / avg_entry * 100
+            if loss_pct <= extend_loss:
+                max_orders = max(max_orders, extend_max)
     if current_count >= max_orders:
         write_log("BLOCKED", f"已達最大加碼次數({current_count}/{max_orders})", symbol=symbol)
         return False
@@ -701,6 +779,13 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
         return False
 
     notional = get_notional(cfg, total)
+    # 已成交筆數超過門檻後放大每單保證金
+    filled_count = state["symbol_sell_count"].get(symbol, 0)
+    scale_after = cfg.get("scale_up_after_order", 10)
+    scale_mult = cfg.get("scale_up_multiplier", 1.0)
+    if filled_count >= scale_after and scale_mult != 1.0:
+        notional = notional * scale_mult
+        logger.info(f"[SCALE_UP] {symbol} 已成交{filled_count}筆，notional × {scale_mult}")
     qty = align_qty(notional / entry_price, filters["step_size"])
     price = align_price(entry_price, filters["tick_size"])
 
@@ -819,7 +904,7 @@ def _clear_symbol_state(symbol: str):
 
 # ===== 黑K偵測 =====
 
-async def check_black_k(exchange: BaseExchange, symbol: str) -> float | None:
+async def check_black_k(exchange: BaseExchange, symbol: str, cfg: dict = None) -> float | None:
     try:
         klines = await exchange.get_klines(symbol, "1m", limit=10)
     except Exception:
@@ -839,11 +924,38 @@ async def check_black_k(exchange: BaseExchange, symbol: str) -> float | None:
     if close_p >= open_p:
         return None
 
+    body_pct = round((open_p - close_p) / open_p * 100, 3)
+
+    # 濾網1：黑K實體太小，可能只是噪音
+    if cfg:
+        min_body = cfg.get("black_k_min_body_pct", 0.5)
+        if body_pct < min_body:
+            write_log("BLACK_K_SKIP", f"黑K實體{body_pct}%太小（門檻{min_body}%），跳過",
+                      symbol=symbol, detail={"body_pct": body_pct, "min_body": min_body})
+            return None
+
+    # 濾網2：黑K最高點仍在1分K上軌上方，表示價格還在強勢區，不開空
+    if cfg and cfg.get("black_k_require_below_upper", True):
+        upper_1m = get_upper_1m(symbol)
+        if upper_1m and high_p >= upper_1m:
+            write_log("BLACK_K_SKIP", f"黑K高點{high_p}仍在上軌{upper_1m:.6f}上方，跳過",
+                      symbol=symbol, detail={"high_p": high_p, "upper_1m": upper_1m})
+            return None
+
+    # 濾網3：上軌斜率過陡，表示趨勢動能太強，不逆勢開空
+    if cfg:
+        max_slope = cfg.get("black_k_max_upper_slope_pct", 0.05)
+        lookback = cfg.get("black_k_upper_slope_lookback", 5)
+        slope = get_upper_1m_slope(symbol, lookback)
+        if slope is not None and slope > max_slope:
+            write_log("BLACK_K_SKIP", f"上軌斜率{slope:.4f}%/根超過{max_slope}%，動能太強跳過",
+                      symbol=symbol, detail={"slope": slope, "max_slope": max_slope})
+            return None
+
     state["black_k_last_k_time"][symbol] = k_open_time
     three_ks = klines[-4:-1]
     highest = max(float(k[2]) for k in three_ks)
 
-    body_pct = round((open_p - close_p) / open_p * 100, 3)
     logger.info(f"🖤 黑K {symbol} body={body_pct}% 目標={highest}")
     write_log("BLACK_K", f"黑K確認，目標={highest}", symbol=symbol,
               detail={"open": open_p, "close": close_p, "high": high_p,
@@ -1110,7 +1222,7 @@ async def trading_loop():
 
                     # 突破上軌：黑K偵測（已持倉時持續偵測，不限制現價位置）
                     if sym in open_syms and sym not in state["black_k_targets"]:
-                        target = await check_black_k(exchange, sym)
+                        target = await check_black_k(exchange, sym, cfg)
                         if target:
                             state["black_k_targets"][sym] = target
                             update_hidden_grids(sym, target, cfg)
@@ -1125,7 +1237,7 @@ async def trading_loop():
                                 if success:
                                     current_open_count += 1
                                     state["black_k_targets"].pop(sym, None)
-                                    state["black_k_last_k_time"].pop(sym, None)
+                                    # 保留 black_k_last_k_time，防止同一根K棒重複觸發黑K
                             else:
                                 write_log("BLOCKED", f"持倉已滿({current_open_count}/{cfg['max_symbols']})", symbol=sym)
 

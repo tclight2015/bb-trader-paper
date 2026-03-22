@@ -330,23 +330,63 @@ nav {
 
 /* CONFIG GRID */
 .config-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.config-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.config-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: white;
+}
+
+.config-section-header.blue   { background: #2563eb; }
+.config-section-header.green  { background: #16a34a; }
+.config-section-header.red    { background: #dc2626; }
+.config-section-header.orange { background: #ea580c; }
+.config-section-header.purple { background: #7c3aed; }
+.config-section-header.gray   { background: #4a5578; }
+.config-section-header.teal   { background: #0d9488; }
+
+.config-fields {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 10px;
+  padding: 14px 16px;
+  background: var(--bg2);
 }
 
 .config-row {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 
 .config-label {
   font-size: 11px;
   font-weight: 600;
   color: var(--text2);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
+}
+
+.config-hint {
+  font-size: 10px;
+  color: var(--text3);
+  margin-bottom: 1px;
 }
 
 .config-input {
@@ -364,17 +404,16 @@ nav {
 
 .config-input:focus { border-color: var(--blue); background: white; }
 
-.config-section-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text3);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding: 8px 0 4px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 8px;
-  grid-column: 1 / -1;
+.config-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
 }
+.config-toggle input[type=checkbox] {
+  width: 16px; height: 16px; cursor: pointer;
+}
+.config-toggle label { font-size: 13px; color: var(--text); cursor: pointer; }
 
 /* SCANNER TABLE */
 .table-wrap { overflow-x: auto; }
@@ -1351,74 +1390,117 @@ async function loadSettings() {
 }
 
 const CONFIG_LABELS = {
-  capital_per_order_pct: ['每單資金佔比 %', '帳戶餘額的百分比'],
-  leverage: ['槓桿倍數', ''],
-  tp_limit_pct: ['止盈限價單佔比 %', '限價單佔止盈總量的%，剩餘為Stop-Market單（預設50）'],
-  take_profit_price_pct: ['止盈（價格跌%）', 'SHORT價格下跌此%止盈，1.0=跌1%'],
-  force_close_price_pct: ['止損（價格漲%）', 'SHORT價格上漲此%止損，3.0=漲3%'],
-  pause_open_rise_pct: ['暫停加碼漲幅 %', '持倉幣種現價比均入價上漲超過此%，停止加碼（價格回落自動恢復）'],
-  pause_open_rise_pct: ['暫停加碼漲幅 %', '持倉幣種現價比均入價上漲超過此%，停止加碼（價格回落自動恢復）'],
-  force_close_capital_pct: ['強制平倉（本金-%）', '單幣種本金虧損此%時強制市價全平（負數）'],
-  margin_usage_limit_pct: ['保證金使用率上限 %', '超過此值停止開新倉'],
-  grid_spacing_pct: ['網格間距 %', '每個隱形網格之間的價格間距'],
-  grid_count: ['隱形網格數量', '每次成交後向下建立幾個隱形網格'],
-  max_symbols: ['最多持倉幣種數', ''],
-  max_orders_per_symbol: ['每幣最大加碼次數', '含首次開倉，達到上限後停止對該幣加碼'],
-  candidate_pool_size: ['候選監控池大小', ''],
-  pre_scan_size: ['預掃描取前N個', '從15分K篩選後再取前N個進候選池'],
-  min_volume_usdt: ['最低24H成交量（USDT）', '避免滑價'],
-  max_dist_to_upper_pct: ['15分K距上軌上限 %', ''],
-  max_dist_1h_upper_pct: ['1小時K距上軌上限 %', ''],
-  min_band_width_pct: ['最低帶寬 %', ''],
-  prev_high_lookback: ['前高保護回看K棒數', ''],
-  volume_spike_multiplier: ['成交量異常倍數', '超過均量N倍跳過'],
-  single_candle_max_rise_pct: ['單K最大漲幅 %', '超過此值不開倉'],
-  candidate_pool_refresh_min: ['候選池更新間隔（分鐘）', '定時強制重新掃描，預設3分鐘'],
+  capital_per_order_pct:         ["每單保證金%", "每單保證金佔帳戶餘額%"],
+  leverage:                      ["槓桿倍數", ""],
+  take_profit_price_pct:         ["止盈（價格跌%）", "SHORT價格下跌此%止盈，1.0=跌1%"],
+  force_close_price_pct:         ["止損（價格漲%）", "SHORT價格上漲此%止損，2.5=漲2.5%"],
+  tp_limit_pct:                  ["止盈限價單佔比%", "限價單占止盈總量的%，剩餘為Stop-Market（預設100）"],
+  pause_open_rise_pct:           ["暫停加碼漲幅%", "持倉幣種現價比均入價上漲超過此%，停止加碼（價格回落自動恢復）"],
+  force_close_capital_pct:       ["強制平倉（本金-%）", "單幣種本金虧損此%時強制市價全平（負數）"],
+  margin_usage_limit_pct:        ["保證金使用率上限%", "全帳戶保證金使用率超過此值停止開新倉"],
+  grid_spacing_pct:              ["網格間距%", "隱形網格每格間距%"],
+  grid_count:                    ["每次網格數量", "每次成交後建立的隱形網格數"],
+  max_symbols:                   ["最多持倉幣種數", ""],
+  max_orders_per_symbol:         ["每幣最大加碼次數", "含首次開倉，達上限停止加碼"],
+  extend_orders_max:             ["放寬加碼上限", "虧損未達門檻時，可加碼到此筆數"],
+  extend_loss_pct:               ["放寬加碼虧損門檻%", "本金虧損在此%以內才適用放寬（正數，例如15=虧15%內）"],
+  scale_up_after_order:          ["遞增加碼起始筆數", "第幾筆成交後開始放大每單保證金"],
+  scale_up_multiplier:           ["遞增倍數", "1.0=停用，1.3=放大1.3倍"],
+  candidate_pool_size:           ["候選監控池大小", ""],
+  pre_scan_size:                 ["預掃描取前N個", "從15分K篩選後再取前N個進候選池"],
+  candidate_pool_refresh_min:    ["候選池更新間隔（分鐘）", ""],
+  min_volume_usdt:               ["最低24H成交量（USDT）", ""],
+  max_dist_to_upper_pct:         ["15分K距上軌上限%", ""],
+  max_dist_1h_upper_pct:         ["1H距上軌上限%", ""],
+  min_band_width_pct:            ["最低帶寬%", ""],
+  prev_high_lookback:            ["前高保護回看K棒數", ""],
+  volume_spike_multiplier:       ["成交量異常倍數", "超過均量N倍跳過"],
+  single_candle_max_rise_pct:    ["單K最大漲幅%", "超過此值不開倉"],
+  black_k_min_body_pct:          ["黑K最小實體%", "低於此值的黑K不觸發"],
+  black_k_require_below_upper:   ["黑K高點須低於上軌", "勾選=啟用，高點在上軌上方時跳過"],
+  black_k_max_upper_slope_pct:   ["上軌最大斜率%/根", "每根1分K上軌漲幅超過此值=動能太強，封鎖黑K"],
+  black_k_upper_slope_lookback:  ["斜率計算回看根數", ""],
 };
 
-const CONFIG_SECTIONS = {
-  '開單設定': ['capital_per_order_pct', 'leverage'],
-  '止盈止損': ['take_profit_price_pct', 'force_close_price_pct', 'tp_limit_pct', 'pause_open_rise_pct', 'force_close_capital_pct'],
-  '保護機制': ['margin_usage_limit_pct'],
-  '網格設定': ['grid_spacing_pct', 'grid_count'],
-  '持倉管理': ['max_symbols', 'max_orders_per_symbol', 'candidate_pool_size', 'pre_scan_size', 'candidate_pool_refresh_min'],
-  '篩選條件': ['min_volume_usdt', 'max_dist_to_upper_pct', 'max_dist_1h_upper_pct', 'min_band_width_pct', 'prev_high_lookback', 'volume_spike_multiplier', 'single_candle_max_rise_pct'],
-};
+const CONFIG_SECTIONS = [
+  { label: "開單設定", color: "blue", icon: "💰",
+    keys: ["capital_per_order_pct", "leverage"] },
+  { label: "止盈止損", color: "red", icon: "🛡",
+    keys: ["take_profit_price_pct", "force_close_price_pct", "tp_limit_pct", "pause_open_rise_pct", "force_close_capital_pct"] },
+  { label: "保護機制", color: "orange", icon: "⚠️",
+    keys: ["margin_usage_limit_pct"] },
+  { label: "網格設定", color: "teal", icon: "📐",
+    keys: ["grid_spacing_pct", "grid_count"] },
+  { label: "持倉管理", color: "purple", icon: "📊",
+    keys: ["max_symbols", "max_orders_per_symbol", "extend_orders_max", "extend_loss_pct", "scale_up_after_order", "scale_up_multiplier", "candidate_pool_size", "pre_scan_size", "candidate_pool_refresh_min"] },
+  { label: "掃描篩選", color: "green", icon: "🔍",
+    keys: ["min_volume_usdt", "max_dist_to_upper_pct", "max_dist_1h_upper_pct", "min_band_width_pct", "prev_high_lookback", "volume_spike_multiplier", "single_candle_max_rise_pct"] },
+  { label: "黑K濾網", color: "gray", icon: "🖤",
+    keys: ["black_k_min_body_pct", "black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback"] },
+];
+
+const BOOL_KEYS = new Set(["black_k_require_below_upper"]);
 
 function renderSettings() {
-  const grid = document.getElementById('configGrid');
-  let html = '';
-  for (const [section, keys] of Object.entries(CONFIG_SECTIONS)) {
-    html += `<div class="config-section-title">${section}</div>`;
-    for (const key of keys) {
-      const [label, hint] = CONFIG_LABELS[key] || [key, ''];
-      const val = configData[key] ?? '';
-      html += `
-        <div class="config-row">
+  const grid = document.getElementById("configGrid");
+  let html = "";
+  for (const section of CONFIG_SECTIONS) {
+    html += `<div class="config-section">
+      <div class="config-section-header ${section.color}">${section.icon} ${section.label}</div>
+      <div class="config-fields">`;
+    for (const key of section.keys) {
+      const [label, hint] = CONFIG_LABELS[key] || [key, ""];
+      const val = configData[key];
+      if (BOOL_KEYS.has(key)) {
+        const checked = val ? "checked" : "";
+        html += `<div class="config-row">
           <div class="config-label">${label}</div>
-          ${hint ? `<div style="font-size:10px;color:var(--text3);margin-bottom:2px">${hint}</div>` : ''}
-          <input class="config-input" id="cfg-${key}" type="number" value="${val}" step="any">
-        </div>
-      `;
+          ${hint ? `<div class="config-hint">${hint}</div>` : ""}
+          <div class="config-toggle">
+            <input type="checkbox" id="cfg-${key}" ${checked}>
+            <label for="cfg-${key}">${val ? "啟用" : "停用"}</label>
+          </div>
+        </div>`;
+      } else {
+        html += `<div class="config-row">
+          <div class="config-label">${label}</div>
+          ${hint ? `<div class="config-hint">${hint}</div>` : ""}
+          <input class="config-input" id="cfg-${key}" type="number" value="${val ?? ""}" step="any">
+        </div>`;
+      }
     }
+    html += `</div></div>`;
   }
   grid.innerHTML = html;
+
+  BOOL_KEYS.forEach(key => {
+    const el = document.getElementById("cfg-" + key);
+    if (el) el.addEventListener("change", () => {
+      const lbl = el.nextElementSibling;
+      if (lbl) lbl.textContent = el.checked ? "啟用" : "停用";
+    });
+  });
 }
 
 async function saveConfig() {
   const update = {};
-  for (const keys of Object.values(CONFIG_SECTIONS)) {
-    for (const key of keys) {
-      const el = document.getElementById('cfg-' + key);
-      if (el) update[key] = parseFloat(el.value);
+  for (const section of CONFIG_SECTIONS) {
+    for (const key of section.keys) {
+      const el = document.getElementById("cfg-" + key);
+      if (!el) continue;
+      if (BOOL_KEYS.has(key)) {
+        update[key] = el.checked;
+      } else {
+        update[key] = parseFloat(el.value);
+      }
     }
   }
-  await fetch('/api/config', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
+  await fetch("/api/config", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
     body: JSON.stringify(update)
   });
-  alert('設定已儲存！');
+  alert("設定已儲存！");
 }
 
 // ===== MODAL =====
