@@ -199,19 +199,20 @@ async def run_scan():
     from trader import state as trader_state
     cfg = load_config()
     max_dist = cfg.get("max_dist_to_upper_pct", 1.0)
-    pre_scan_size = cfg.get("pre_scan_size", 20)
+    pre_scan_size = cfg.get("pre_scan_size", 30)
     pool_size = cfg.get("candidate_pool_size", 10)
 
+    # 步驟1：距離15分K上軌過濾，取前 pre_scan_size 個
     filtered = [r for r in results if r.get("dist_to_upper_pct", 999) <= max_dist]
     top_15m = filtered[:pre_scan_size]
 
-    def sort_key(x):
-        dist = x.get("dist_1h_pct") if x.get("dist_1h_pct") is not None else 999
-        bonus = x.get("prev_high_score", 0) * 0.5
-        return dist - bonus
+    # 步驟2：硬性條件，必須有前高壓力（prev_high_score > 0），按前高壓力由大到小排
+    with_prev_high = [r for r in top_15m if r.get("prev_high_score", 0) > 0]
+    with_prev_high.sort(key=lambda x: x.get("prev_high_score", 0), reverse=True)
 
-    top_15m.sort(key=sort_key)
-    final_pool = top_15m[:pool_size]
+    # 步驟3：在有前高的名單裡，按1H上軌距離由近到遠排序，取前 pool_size 個進候選池
+    with_prev_high.sort(key=lambda x: x.get("dist_1h_pct") if x.get("dist_1h_pct") is not None else 999)
+    final_pool = with_prev_high[:pool_size]
 
     trader_state["scanner_latest_result"] = [
         {**r, "dist_to_upper": r.get("dist_to_upper_pct", 0)}

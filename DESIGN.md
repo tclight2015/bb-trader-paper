@@ -31,6 +31,8 @@
 | v4.15 | 修正平倉後隱形網格仍成交問題：`handle_close_fill` 平倉後逐一取消殘留 SELL 掛單，若已成交則補市價 BUY 平倉；`close_symbol`（手動/強制）維持取消全部掛單再平倉的原始邏輯 | — |
 | v4.16 | 修正黑K無限循環bug：開倉成功後不再 pop `black_k_last_k_time`，保留防重複機制，防止同一根K棒反覆觸發黑K開倉 | — |
 | v4.17 | 設定頁儲存時若 `grid_spacing_pct` 或 `grid_count` 有變更，自動對所有現有持倉取消舊網格掛單並以新設定重算 | — |
+| v4.18 | 黑K濾網2+3合併：斜率過陡 AND 高點在上軌上方才擋；斜率過陡但高點在上軌下方放行；斜率不陡無論高點在哪都放行 | — |
+| v4.19 | 候選池篩選邏輯重寫：前高壓力改為硬性條件（`prev_high_score > 0` 才進候選池）；`pre_scan_size` 預設改30；篩選順序：15分K距離過濾 → 有前高壓力才留（按壓力大到小）→ 1H上軌距離由近到遠排序 → 取前 `candidate_pool_size` 個 | — |
 
 ---
 
@@ -186,6 +188,7 @@ prev_high_score = count_score + avg_excess * 0.1
 | 黑K邏輯在無持倉時觸發 | v1-v4.7 | v4.8 | 候選池循環中黑K偵測未檢查是否已持倉，可能以黑K當第一單；加入 `and sym in open_syms` 限制只在已持倉時追蹤 |
 | Paper mode 平倉不記DB | v4.1-v4.7 | v4.8 | `paper_fill_handler` 先呼叫 `handle_user_event` 後才同步持倉，導致 `handle_close_fill` 誤判持倉未清空，跳去重掛止盈止損；改為先同步持倉再呼叫 `handle_user_event` |
 | `close_symbol` 中 `pnl` 未定義 | v1-v4.7 | v4.8 | `write_log` 中誤用 `pnl` 變數，應為 `total_pnl`；修正變數名稱 |
+| 黑K濾網2+3獨立導致好空點錯過 | v4.13-v4.17 | v4.18 | 舊邏輯：高點超上軌一律擋、斜率過陡一律擋；新邏輯：斜率過陡 AND 高點在上軌上方才擋，斜率過陡但高點已低於上軌放行，斜率不陡無論高點在哪都放行 |
 
 ---
 

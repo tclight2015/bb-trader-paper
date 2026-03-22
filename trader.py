@@ -934,23 +934,25 @@ async def check_black_k(exchange: BaseExchange, symbol: str, cfg: dict = None) -
                       symbol=symbol, detail={"body_pct": body_pct, "min_body": min_body})
             return None
 
-    # 濾網2：黑K最高點仍在1分K上軌上方，表示價格還在強勢區，不開空
-    if cfg and cfg.get("black_k_require_below_upper", True):
-        upper_1m = get_upper_1m(symbol)
-        if upper_1m and high_p >= upper_1m:
-            write_log("BLACK_K_SKIP", f"黑K高點{high_p}仍在上軌{upper_1m:.6f}上方，跳過",
-                      symbol=symbol, detail={"high_p": high_p, "upper_1m": upper_1m})
-            return None
-
-    # 濾網3：上軌斜率過陡，表示趨勢動能太強，不逆勢開空
+    # 濾網2+3（合併）：斜率過陡 AND 高點在上軌上方 → 才擋
+    # 斜率過陡但高點在上軌下方 → 放行（已脫離強勢區）
+    # 斜率不陡無論高點在哪 → 放行
     if cfg:
         max_slope = cfg.get("black_k_max_upper_slope_pct", 0.05)
         lookback = cfg.get("black_k_upper_slope_lookback", 5)
         slope = get_upper_1m_slope(symbol, lookback)
-        if slope is not None and slope > max_slope:
-            write_log("BLACK_K_SKIP", f"上軌斜率{slope:.4f}%/根超過{max_slope}%，動能太強跳過",
-                      symbol=symbol, detail={"slope": slope, "max_slope": max_slope})
-            return None
+        slope_too_steep = slope is not None and slope > max_slope
+
+        if slope_too_steep:
+            upper_1m = get_upper_1m(symbol)
+            high_above_upper = upper_1m is not None and high_p >= upper_1m
+            if high_above_upper:
+                write_log("BLACK_K_SKIP",
+                          f"斜率{slope:.4f}%/根過陡且高點{high_p}在上軌{upper_1m:.6f}上方，跳過",
+                          symbol=symbol,
+                          detail={"slope": slope, "max_slope": max_slope,
+                                  "high_p": high_p, "upper_1m": upper_1m})
+                return None
 
     state["black_k_last_k_time"][symbol] = k_open_time
     three_ks = klines[-4:-1]
