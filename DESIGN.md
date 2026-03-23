@@ -32,6 +32,10 @@
 | v4.16 | 修正黑K無限循環bug：開倉成功後不再 pop `black_k_last_k_time`，保留防重複機制，防止同一根K棒反覆觸發黑K開倉 | — |
 | v4.17 | 設定頁儲存時若 `grid_spacing_pct` 或 `grid_count` 有變更，自動對所有現有持倉取消舊網格掛單並以新設定重算 | — |
 | v4.18 | 黑K濾網2+3合併：斜率過陡 AND 高點在上軌上方才擋；斜率過陡但高點在上軌下方放行；斜率不陡無論高點在哪都放行 | — |
+| v4.23 | 前高保護邏輯重寫：固定回看5根K棒，改用最大超出幅度%為主指標（`prev_high_score ≈ max_excess + count*0.2`）；候選池門檻改為 `prev_high_min_excess_pct`（預設1.0%），至少一根高點須超過現價1%才進池；移除 `prev_high_lookback` 設定欄位；設定頁同步更新 | — |
+| v4.22 | 修正平倉重複寫DB：止損單WS成交後 handle_close_fill 與 close_symbol（FORCE_CLOSE）同時觸發導致報表出現兩筆；加入 `closing_symbols` 標記，close_symbol 執行中時 handle_close_fill 自動跳過 | — |
+| v4.21 | 隱形網格四項改動：(1)基準價改為 max(成交價, 均入價)，避免成本下移；(2)網格價格低於1分K中軌暫緩掛出；(3)每輪主循環重試暫緩網格，回到中軌以上才掛；(4)`grid_spacing_pct` 預設0.15→0.2，`grid_count` 預設4→2 | — |
+| v4.20 | 儀表板開倉筆數改為直接顯示實際成交次數（`symbol_sell_count`），不再用保證金反推 | — |
 | v4.19 | 候選池篩選邏輯重寫：前高壓力改為硬性條件（`prev_high_score > 0` 才進候選池）；`pre_scan_size` 預設改30；篩選順序：15分K距離過濾 → 有前高壓力才留（按壓力大到小）→ 1H上軌距離由近到遠排序 → 取前 `candidate_pool_size` 個 | — |
 
 ---
@@ -143,7 +147,7 @@ requirements.txt
 | `max_dist_to_upper_pct` | 0.5 | `app.py: run_scan()` | 距15分K上軌最大距離% |
 | `max_dist_1h_upper_pct` | 1.0 | `app.py: run_scan()` ⚠️ 只排序，未硬過濾 | 距1H上軌最大距離% |
 | `min_band_width_pct` | 1.0 | `app.py: scan_symbol()` | 最低BB帶寬% |
-| `prev_high_lookback` | 5 | `app.py: scan_symbol()` | 前高壓力評分回看K棒數（見下方詳細說明） |
+| `prev_high_min_excess_pct` | 1.0 | `app.py: run_scan()` | 前高保護門檻：前5根中至少一根高點須超過現價X%（固定5根，不再可調） |
 | `volume_spike_multiplier` | 3.0 | ⚠️ config 有定義，未實作 | 成交量異常倍數（超過均量N倍跳過） |
 | `single_candle_max_rise_pct` | 1.0 | ⚠️ config 有定義，未實作 | 單K最大漲幅%（超過不開倉） |
 
@@ -471,7 +475,7 @@ requirements.txt
 | `max_dist_to_upper_pct` | 0.5 | `app.py: run_scan()` | 距15分K上軌最大距離% |
 | `max_dist_1h_upper_pct` | 1.0 | `app.py: run_scan()` ⚠️ 只排序，未硬過濾 | 距1H上軌最大距離% |
 | `min_band_width_pct` | 1.0 | `app.py: scan_symbol()` | 最低BB帶寬% |
-| `prev_high_lookback` | 5 | `app.py: scan_symbol()` | 前高壓力評分回看K棒數（見下方詳細說明） |
+| `prev_high_min_excess_pct` | 1.0 | `app.py: run_scan()` | 前高保護門檻：前5根中至少一根高點須超過現價X%（固定5根，不再可調） |
 | `volume_spike_multiplier` | 3.0 | ⚠️ config 有定義，未實作 | 成交量異常倍數（超過均量N倍跳過） |
 | `single_candle_max_rise_pct` | 1.0 | ⚠️ config 有定義，未實作 | 單K最大漲幅%（超過不開倉） |
 

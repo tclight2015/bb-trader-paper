@@ -15,8 +15,8 @@ DEFAULT_CONFIG = {
     # notional = 帳戶餘額 * capital_per_order_pct% * leverage
 
     # === 網格設定 ===
-    "grid_spacing_pct": 0.15,          # 網格間距%（隱形網格間距）
-    "grid_count": 4,                   # 每次重算後建立的隱形網格數量
+    "grid_spacing_pct": 0.2,           # 網格間距%（隱形網格間距）
+    "grid_count": 2,                   # 每次重算後建立的隱形網格數量
 
     # === 持倉管理 ===
     "max_symbols": 1,                   # 最多同時持倉幣種數
@@ -43,7 +43,7 @@ DEFAULT_CONFIG = {
     "max_dist_to_upper_pct": 0.5,      # 距15分K上軌最大距離%
     "max_dist_1h_upper_pct": 1.0,      # 距1H上軌最大距離%
     "min_band_width_pct": 1.0,         # 最低BB帶寬%
-    "prev_high_lookback": 5,           # 前高壓力：往前看N根K棒
+    "prev_high_min_excess_pct": 1.0,   # 前高保護：前5根中至少一根高點須超過現價X%
 
     # === 異常偵測 ===
     "volume_spike_multiplier": 3.0,    # 成交量異常倍數（超過均量N倍跳過）

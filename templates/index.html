@@ -1026,11 +1026,7 @@ async function loadPositions() {
       const tpSl = pos.tp_sl_orders || {};
       const pnlColor = unrealizedPnl >= 0 ? 'var(--success)' : 'var(--danger)';
 
-      const acctData = window._lastAccountData || {};
-      const totalBalance = acctData?.balance?.total || 0;
-      const capitalPct = acctData?.capital_per_order_pct || 1.0;
-      const marginPerShot = totalBalance > 0 ? totalBalance * (capitalPct / 100) : 100;
-      const shots = marginPerShot > 0 ? Math.round(margin / marginPerShot * 10) / 10 : '—';
+      const shots = pos.sell_count ?? '—';
 
       return `
         <div class="position-card">
@@ -1413,7 +1409,7 @@ const CONFIG_LABELS = {
   max_dist_to_upper_pct:         ["15分K距上軌上限%", ""],
   max_dist_1h_upper_pct:         ["1H距上軌上限%", ""],
   min_band_width_pct:            ["最低帶寬%", ""],
-  prev_high_lookback:            ["前高保護回看K棒數", ""],
+  prev_high_min_excess_pct:      ["前高保護最小超出幅度%", "前5根K棒中至少一根高點須超過現價X%才進候選池"],
   volume_spike_multiplier:       ["成交量異常倍數", "超過均量N倍跳過"],
   single_candle_max_rise_pct:    ["單K最大漲幅%", "超過此值不開倉"],
   black_k_min_body_pct:          ["黑K最小實體%", "低於此值的黑K不觸發"],
@@ -1434,7 +1430,7 @@ const CONFIG_SECTIONS = [
   { label: "持倉管理", color: "purple", icon: "📊",
     keys: ["max_symbols", "max_orders_per_symbol", "extend_orders_max", "extend_loss_pct", "scale_up_after_order", "scale_up_multiplier", "candidate_pool_size", "pre_scan_size", "candidate_pool_refresh_min"] },
   { label: "掃描篩選", color: "green", icon: "🔍",
-    keys: ["min_volume_usdt", "max_dist_to_upper_pct", "max_dist_1h_upper_pct", "min_band_width_pct", "prev_high_lookback", "volume_spike_multiplier", "single_candle_max_rise_pct"] },
+    keys: ["min_volume_usdt", "max_dist_to_upper_pct", "max_dist_1h_upper_pct", "min_band_width_pct", "prev_high_min_excess_pct", "volume_spike_multiplier", "single_candle_max_rise_pct"] },
   { label: "黑K濾網", color: "gray", icon: "🖤",
     keys: ["black_k_min_body_pct", "black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback"] },
 ];

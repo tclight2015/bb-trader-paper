@@ -129,21 +129,22 @@ async def scan_symbol(session, symbol, cfg=None, volume_map=None):
             dist_1h_pct = (bb1h["upper"] - price) / bb1h["upper"] * 100
 
     # 前高壓力評分
-    # 邏輯：前N根K棒中，高點 > 現價的根數越多越好，且超過現價幅度越大越好
-    # 型態：價格從下方靠近上軌，上方有歷史高點形成壓力 → 做空勝率較高
-    # 反例：價格一路下跌靠近上軌，前高都在現價之下 → 上方無壓，容易突破
+    # 邏輯：固定回看5根K棒，取所有高點中超過現價的最大幅度（%）
+    # 一根高牆（超出幅度大）比多根矮牆更有意義
+    # 候選池硬性門檻：max_excess >= prev_high_min_excess_pct（設定頁可調）
     prev_high_score = 0.0
-    lookback = cfg.get("prev_high_lookback", 5) if cfg else 5
-    if lookback > 0 and len(klines) >= lookback + 1:
+    lookback = 5
+    if len(klines) >= lookback + 1:
         recent_highs = [float(k[2]) for k in klines[-(lookback + 1):-1]]
         bars_above = [h for h in recent_highs if h > price]
         if bars_above:
-            # 比例分：有幾根高點在現價之上（0~1）
+            # 各根超出幅度%
+            excesses = [(h - price) / price * 100 for h in bars_above]
+            max_excess = max(excesses)
+            avg_excess = sum(excesses) / len(excesses)
             count_score = len(bars_above) / lookback
-            # 幅度分：這些高點平均超過現價多少%（超過越多越好）
-            avg_excess = sum((h - price) / price * 100 for h in bars_above) / len(bars_above)
-            # 合併：比例 + 幅度加權（幅度用 0.1 縮放，避免蓋過比例分）
-            prev_high_score = round(count_score + avg_excess * 0.1, 4)
+            # score = 最大超出幅度（主要）+ 根數比例加權（次要）
+            prev_high_score = round(max_excess + count_score * 0.2, 4)
 
     return {
         "symbol": symbol.replace("USDT", ""),
@@ -206,8 +207,10 @@ async def run_scan():
     filtered = [r for r in results if r.get("dist_to_upper_pct", 999) <= max_dist]
     top_15m = filtered[:pre_scan_size]
 
-    # 步驟2：硬性條件，必須有前高壓力（prev_high_score > 0），按前高壓力由大到小排
-    with_prev_high = [r for r in top_15m if r.get("prev_high_score", 0) > 0]
+    # 步驟2：硬性條件，前高最大超出幅度必須 >= prev_high_min_excess_pct（預設1.0%）
+    # prev_high_score ≈ max_excess + count_score*0.2，門檻近似直接對應幅度%
+    min_excess = cfg.get("prev_high_min_excess_pct", 1.0)
+    with_prev_high = [r for r in top_15m if r.get("prev_high_score", 0) >= min_excess]
     with_prev_high.sort(key=lambda x: x.get("prev_high_score", 0), reverse=True)
 
     # 步驟3：在有前高的名單裡，按1H上軌距離由近到遠排序，取前 pool_size 個進候選池
@@ -298,6 +301,7 @@ def api_positions():
             **pos,
             "hidden_grids": state["hidden_grids"].get(sym, []),
             "tp_sl_orders": state["tp_sl_orders"].get(sym, {}),
+            "sell_count": state["symbol_sell_count"].get(sym, 0),
         }
     return jsonify({"positions": result, "symbols": list(result.keys())})
 
@@ -396,7 +400,7 @@ def api_config_set():
         "margin_usage_limit_pct", "min_volume_usdt",
         "candidate_pool_refresh_min",
         "max_dist_to_upper_pct", "max_dist_1h_upper_pct",
-        "min_band_width_pct", "prev_high_lookback",
+        "min_band_width_pct", "prev_high_min_excess_pct",
         "volume_spike_multiplier", "single_candle_max_rise_pct",
         "black_k_min_body_pct", "black_k_require_below_upper",
         "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback",

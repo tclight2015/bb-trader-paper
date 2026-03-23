@@ -49,6 +49,7 @@ state = {
     "symbol_avg_entry": {},     # symbol -> 最新均入價（每次SELL成交後更新，平倉後清除）
     "symbol_realized_pnl": {},  # symbol -> 累積已實現損益（分批平倉時累加，完全平倉後記DB）
     "pending_open": set(),      # 已掛開倉單但尚未成交的幣種（防止超過 max_symbols）
+    "closing_symbols": set(),   # 正在由 close_symbol 處理平倉的幣種（防止 handle_close_fill 重複寫DB）
     "symbol_setup_done": set(),
     "symbol_filters_cache": {},
 
@@ -169,12 +170,21 @@ async def refresh_upper_1m(exchange: BaseExchange, symbols: list):
             klines = await exchange.get_klines(sym, "1m", limit=25)
             upper = _calc_bb_upper(klines)
             if upper:
+                # 同時計算中軌（BB中軌 = 20期移動平均）
+                closes = [float(k[4]) for k in klines]
+                period = 20
+                middle = sum(closes[-period:]) / period if len(closes) >= period else None
                 entry = state["upper_1m_cache"].get(sym, {})
                 history = entry.get("history", [])
                 history.append(upper)
-                if len(history) > 10:  # 最多保留10筆歷史
+                if len(history) > 10:
                     history = history[-10:]
-                state["upper_1m_cache"][sym] = {"upper": upper, "ts": time.time(), "history": history}
+                state["upper_1m_cache"][sym] = {
+                    "upper": upper,
+                    "middle": middle,
+                    "ts": time.time(),
+                    "history": history
+                }
         except Exception as e:
             logger.debug(f"1分K上軌更新失敗 {sym}: {e}")
 
@@ -431,6 +441,10 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
 async def handle_close_fill(exchange: BaseExchange, cfg: dict, symbol: str,
                              close_price: float, qty: float):
     """持倉已確認歸零後呼叫，記錄平倉歷史"""
+    # 若 close_symbol 已在處理（手動/強制平倉），跳過避免重複寫DB
+    if symbol in state["closing_symbols"]:
+        write_log("CLOSE", f"平倉完成(WS) 已由close_symbol處理，跳過重複記錄", symbol=symbol)
+        return
     # 用累積已實現損益（含所有分批平倉）
     total_pnl = state["symbol_realized_pnl"].get(symbol, 0)
 
@@ -556,12 +570,16 @@ def calc_hidden_grids(entry_price, grid_spacing_pct, count=4):
 
 
 def update_hidden_grids(symbol: str, entry_price: float, cfg: dict):
-    count = cfg.get("grid_count", 4)
-    grids = calc_hidden_grids(entry_price, cfg["grid_spacing_pct"], count)
+    count = cfg.get("grid_count", 2)
+    # 基準價取成交價與平均成本價兩者之高，避免成本被往下拉
+    avg_entry = state["symbol_avg_entry"].get(symbol, 0)
+    base_price = max(entry_price, avg_entry) if avg_entry > 0 else entry_price
+    grids = calc_hidden_grids(base_price, cfg["grid_spacing_pct"], count)
     state["hidden_grids"][symbol] = grids
-    logger.info(f"隱形網格更新 {symbol}: {grids}")
-    write_log("HIDDEN_GRID_UPDATE", f"隱形網格重算，基準價={entry_price}",
-              symbol=symbol, detail={"entry_price": entry_price, "grids": grids})
+    logger.info(f"隱形網格更新 {symbol}: {grids} (基準={base_price}, 成交={entry_price}, 均入={avg_entry})")
+    write_log("HIDDEN_GRID_UPDATE", f"隱形網格重算，基準價={base_price}（成交={entry_price}，均入={avg_entry}）",
+              symbol=symbol, detail={"base_price": base_price, "entry_price": entry_price,
+                                     "avg_entry": avg_entry, "grids": grids})
 
 
 async def check_and_place_hidden_grids(exchange: BaseExchange, cfg: dict, symbol: str):
@@ -606,8 +624,17 @@ async def check_and_place_hidden_grids(exchange: BaseExchange, cfg: dict, symbol
         notional = notional * scale_mult
     remaining = []
 
+    # 取1分K中軌作為掛單下限（由 refresh_upper_1m 每輪快取）
+    middle_1m = state["upper_1m_cache"].get(symbol, {}).get("middle")
+
     for grid_price in grids:
         if current_price < grid_price:
+            # 中軌濾網：網格價格低於1分K中軌則暫緩掛出，等回到中軌以上再掛
+            if middle_1m is not None and grid_price < middle_1m:
+                remaining.append(grid_price)
+                write_log("GRID_HOLD", f"隱形網格暫緩（低於1分K中軌{middle_1m:.6f}）@ {grid_price}",
+                          symbol=symbol, detail={"grid_price": grid_price, "middle_1m": middle_1m})
+                continue
             qty = align_qty(notional / grid_price, filters["step_size"])
             aligned_price = align_price(grid_price, filters["tick_size"])
             if qty <= 0:
@@ -821,6 +848,7 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
 
 async def close_symbol(exchange: BaseExchange, cfg: dict, symbol: str, reason: str = "TP"):
     logger.info(f"平倉 {symbol} reason={reason}")
+    state["closing_symbols"].add(symbol)  # 標記平倉中，防止 handle_close_fill 重複寫DB
 
     # 先取持倉資料（必須在 place_market_order 之前，paper mode 成交後持倉會清空）
     pos = await get_position_rest(exchange, symbol)
@@ -899,6 +927,7 @@ def _clear_symbol_state(symbol: str):
     state["symbol_total_margin"].pop(symbol, None)
     state["symbol_avg_entry"].pop(symbol, None)
     state["symbol_realized_pnl"].pop(symbol, None)
+    state["closing_symbols"].discard(symbol)
     state["margin_pause"] = False
 
 
@@ -1017,6 +1046,10 @@ async def check_position_protection(exchange: BaseExchange, cfg: dict, symbol: s
     capital_return_pct = roe_pct / cfg["leverage"]
 
     if capital_return_pct <= cfg["force_close_capital_pct"]:
+        # 再確認持倉還存在（避免止損單剛成交、handle_close_fill 已寫DB，又重複觸發）
+        pos_check = state["_binance_positions_cache"].get(symbol, {})
+        if pos_check.get("qty", 0) <= 0:
+            return
         write_log("ROE_FORCE", f"本金虧損{capital_return_pct:.1f}%，強制平倉", symbol=symbol)
         await close_symbol(exchange, cfg, symbol, reason="FORCE_CLOSE")
 
@@ -1070,6 +1103,7 @@ async def reset_system(exchange: BaseExchange, cfg: dict) -> dict:
     state["symbol_setup_done"].clear()
     state["symbol_filters_cache"].clear()
     state["balance_cache"] = None
+    state["closing_symbols"].discard(symbol)
     state["margin_pause"] = False
     state["_binance_positions_cache"] = all_positions
 
