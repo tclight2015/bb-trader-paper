@@ -1209,6 +1209,12 @@ async def trading_loop():
                 try:
                     await check_and_place_hidden_grids(exchange, cfg, symbol)
                     await check_position_protection(exchange, cfg, symbol)
+                    # 黑K偵測加碼（持倉幣才需要，不限候選池）
+                    if symbol not in state["black_k_targets"]:
+                        target = await check_black_k(exchange, symbol, cfg)
+                        if target:
+                            state["black_k_targets"][symbol] = target
+                            update_hidden_grids(symbol, target, cfg)
                 except Exception as e:
                     logger.error(f"監控失敗 {symbol}: {e}")
 
@@ -1255,13 +1261,6 @@ async def trading_loop():
                     if current_price < upper * 0.998 and sym in state["triggered_symbols"]:
                         if sym not in open_syms:
                             state["triggered_symbols"].discard(sym)
-
-                    # 突破上軌：黑K偵測（已持倉時持續偵測，不限制現價位置）
-                    if sym in open_syms and sym not in state["black_k_targets"]:
-                        target = await check_black_k(exchange, sym, cfg)
-                        if target:
-                            state["black_k_targets"][sym] = target
-                            update_hidden_grids(sym, target, cfg)
 
                     # 黑K目標觸價
                     if sym in state["black_k_targets"]:
