@@ -40,8 +40,7 @@ state = {
     "scanner_latest_result": [],
 
     "tp_sl_orders": {},
-    "black_k_targets": {},
-    "black_k_last_k_time": {},
+
     "hidden_grids": {},
     "known_fills": {},
     "symbol_sell_count": {},    # symbol -> SELL 成交次數（開倉+加碼）
@@ -982,8 +981,6 @@ async def close_symbol(exchange: BaseExchange, cfg: dict, symbol: str, reason: s
 
 def _clear_symbol_state(symbol: str):
     state["tp_sl_orders"].pop(symbol, None)
-    state["black_k_targets"].pop(symbol, None)
-    state["black_k_last_k_time"].pop(symbol, None)
     state["hidden_grids"].pop(symbol, None)
     state["known_fills"].pop(symbol, None)
     state["_binance_positions_cache"].pop(symbol, None)
@@ -1003,68 +1000,6 @@ def _clear_symbol_state(symbol: str):
 
 
 # ===== 黑K偵測 =====
-
-async def check_black_k(exchange: BaseExchange, symbol: str, cfg: dict = None) -> float | None:
-    try:
-        klines = await exchange.get_klines(symbol, "1m", limit=10)
-    except Exception:
-        return None
-    if not klines or len(klines) < 4:
-        return None
-
-    last_k = klines[-2]
-    k_open_time = last_k[0]
-    open_p = float(last_k[1])
-    high_p = float(last_k[2])
-    close_p = float(last_k[4])
-    volume = float(last_k[5])
-
-    if state["black_k_last_k_time"].get(symbol) == k_open_time:
-        return None
-    if close_p >= open_p:
-        return None
-
-    body_pct = round((open_p - close_p) / open_p * 100, 3)
-
-    # 濾網1：黑K實體太小，可能只是噪音
-    if cfg:
-        min_body = cfg.get("black_k_min_body_pct", 0.5)
-        if body_pct < min_body:
-            write_log("BLACK_K_SKIP", f"黑K實體{body_pct}%太小（門檻{min_body}%），跳過",
-                      symbol=symbol, detail={"body_pct": body_pct, "min_body": min_body})
-            return None
-
-    # 濾網2+3（合併）：斜率過陡 AND 高點在上軌上方 → 才擋
-    # 斜率過陡但高點在上軌下方 → 放行（已脫離強勢區）
-    # 斜率不陡無論高點在哪 → 放行
-    if cfg:
-        max_slope = cfg.get("black_k_max_upper_slope_pct", 0.05)
-        lookback = cfg.get("black_k_upper_slope_lookback", 5)
-        slope = get_upper_1m_slope(symbol, lookback)
-        slope_too_steep = slope is not None and slope > max_slope
-
-        if slope_too_steep:
-            upper_1m = get_upper_1m(symbol)
-            high_above_upper = upper_1m is not None and high_p >= upper_1m
-            if high_above_upper:
-                write_log("BLACK_K_SKIP",
-                          f"斜率{slope:.4f}%/根過陡且高點{high_p}在上軌{upper_1m:.6f}上方，跳過",
-                          symbol=symbol,
-                          detail={"slope": slope, "max_slope": max_slope,
-                                  "high_p": high_p, "upper_1m": upper_1m})
-                return None
-
-    state["black_k_last_k_time"][symbol] = k_open_time
-    three_ks = klines[-4:-1]
-    highest = max(float(k[2]) for k in three_ks)
-
-    logger.info(f"🖤 黑K {symbol} body={body_pct}% 目標={highest}")
-    write_log("BLACK_K", f"黑K確認，目標={highest}", symbol=symbol,
-              detail={"open": open_p, "close": close_p, "high": high_p,
-                      "body_pct": body_pct, "volume": volume,
-                      "highest": highest, "k_open_time": k_open_time})
-    return highest
-
 
 # ===== 持倉保護（漲幅暫停加碼 + 分階停損）=====
 
@@ -1165,8 +1100,6 @@ async def reset_system(exchange: BaseExchange, cfg: dict) -> dict:
             logger.error(f"取消掛單失敗 {symbol}: {e}")
 
     state["tp_sl_orders"].clear()
-    state["black_k_targets"].clear()
-    state["black_k_last_k_time"].clear()
     state["hidden_grids"].clear()
     state["known_fills"].clear()
     state["triggered_symbols"].clear()
@@ -1299,12 +1232,7 @@ async def trading_loop():
 
                     await check_and_place_hidden_grids(exchange, cfg, symbol)
                     await check_position_protection(exchange, cfg, symbol)
-                    # 黑K偵測加碼（持倉幣才需要，不限候選池）
-                    if symbol not in state["black_k_targets"]:
-                        target = await check_black_k(exchange, symbol, cfg)
-                        if target:
-                            state["black_k_targets"][symbol] = target
-                            update_hidden_grids(symbol, target, cfg)
+
                     # 第二段止盈追蹤保底：價格反彈回第一段目標價 → 取消第二段，改市價全出
                     guard_price = state["tp_tier2_guard"].get(symbol)
                     if guard_price and symbol in state["tp_tier1_done"]:
@@ -1374,19 +1302,7 @@ async def trading_loop():
                         if sym not in open_syms:
                             state["triggered_symbols"].discard(sym)
 
-                    # 黑K目標觸價
-                    if sym in state["black_k_targets"]:
-                        target_price = state["black_k_targets"][sym]
-                        if current_price >= target_price * 0.9995:
-                            at_max = not already_has_position and current_open_count >= cfg["max_symbols"]
-                            if not at_max:
-                                success = await try_open_position(exchange, cfg, sym, target_price, "BLACK_K")
-                                if success:
-                                    current_open_count += 1
-                                    state["black_k_targets"].pop(sym, None)
-                                    # 保留 black_k_last_k_time，防止同一根K棒重複觸發黑K
-                            else:
-                                write_log("BLOCKED", f"持倉已滿({current_open_count}/{cfg['max_symbols']})", symbol=sym)
+
 
         except Exception as e:
             logger.error(f"主循環錯誤: {e}", exc_info=True)

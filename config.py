@@ -11,7 +11,7 @@ DEFAULT_CONFIG = {
 
     # === 開單設定 ===
     "capital_per_order_pct": 1.0,
-    "time_stop_minutes": 0,            # 時間停損：第一槍後X分鐘市價出清（0=停用）      # 每單保證金佔帳戶餘額%
+    "time_stop_minutes": 0,            # 時間停損：第一槍後X分鐘市價出清（0=停用）
     "leverage": 30,                     # 槓桿倍數
     # notional = 帳戶餘額 * capital_per_order_pct% * leverage
 
@@ -50,18 +50,11 @@ DEFAULT_CONFIG = {
     "min_volume_usdt": 5_000_000,      # 最低24H成交量（USDT），0=無限制
     "max_dist_to_upper_pct": 0.3,      # 距15分K上軌最大距離%（硬性條件）
     "max_dist_1h_upper_pct": 0.5,      # 距1H上軌最大距離%（硬性條件）
-    "min_band_width_pct": 1.0,         # 最低BB帶寬%
     "prev_high_min_excess_pct": 1.0,   # 前高保護：前5根中至少一根高點須超過現價X%
 
     # === 異常偵測 ===
-    "volume_spike_multiplier": 3.0,    # 成交量異常倍數（超過均量N倍跳過）
-    "single_candle_max_rise_pct": 1.0, # 單K最大漲幅%（超過此值不開倉）
 
     # === 黑K濾網 ===
-    "black_k_min_body_pct": 0.5,       # 黑K實體最小幅度%（掃描器設定，低於此值不觸發）
-    "black_k_require_below_upper": True, # 黑K最高點必須低於1分K上軌才觸發
-    "black_k_max_upper_slope_pct": 0.05, # 上軌每根K最大漲幅%（超過表示動能太強，不開空）
-    "black_k_upper_slope_lookback": 5,   # 計算上軌斜率的回看根數
 
     # === 加碼放寬 ===
     "extend_orders_max": 25,           # 虧損未達門檻時，可放寬加碼到幾筆

@@ -709,23 +709,6 @@ select.filter-select {
 <!-- ========== PAGE: SCANNER ========== -->
 <div class="page" id="page-scanner">
   <div class="filter-bar">
-    <span class="filter-label">15分K距上軌%</span>
-    <input class="filter-input" id="maxDist" type="number" value="0.3" min="0.1" max="100" step="0.1" onchange="renderScanner()">
-    <span class="filter-label">1H距上軌%</span>
-    <input class="filter-input" id="maxDist1h" type="number" value="0.5" min="0.1" max="100" step="0.1" onchange="renderScanner()">
-    <span class="filter-label">黑K最小實體%</span>
-    <input class="filter-input" id="blackKBody" type="number" value="0.5" min="0" max="10" step="0.1" onchange="renderScanner()">
-    <span class="filter-label">成交量篩選</span>
-    <select class="filter-select" id="volFilter" onchange="renderScanner()">
-      <option value="0">無限制</option>
-      <option value="1000000">1M+</option>
-      <option value="5000000">5M+</option>
-      <option value="10000000">10M+</option>
-      <option value="50000000">50M+</option>
-      <option value="100000000">100M+</option>
-    </select>
-    <span class="filter-label">搜尋</span>
-    <input class="filter-search filter-input" id="searchInput" type="text" placeholder="BTC, ETH..." oninput="renderScanner()">
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
       <span style="font-size:11px;color:var(--text3);font-family:var(--mono)" id="scannerStatus">—</span>
       <span class="badge" id="scannerCount">—</span>
@@ -1151,13 +1134,6 @@ function confirmClose(symbol) {
 // ===== SCANNER =====
 async function loadScanner() {
   try {
-    // 從 config 讀回掃描器欄位值
-    const cfgRes = await fetch('/api/config');
-    const cfg = await cfgRes.json();
-    if (cfg.max_dist_to_upper_pct != null) document.getElementById('maxDist').value = cfg.max_dist_to_upper_pct;
-    if (cfg.max_dist_1h_upper_pct != null) document.getElementById('maxDist1h').value = cfg.max_dist_1h_upper_pct;
-    if (cfg.black_k_min_body_pct != null) document.getElementById('blackKBody').value = cfg.black_k_min_body_pct;
-
     const res = await fetch('/api/scanner/data');
     const data = await res.json();
     scannerData = data.data || [];
@@ -1173,29 +1149,7 @@ async function manualScanRefresh() {
 }
 
 function renderScanner() {
-  const maxDist = parseFloat(document.getElementById('maxDist').value) || 999;
-  const maxDist1h = parseFloat(document.getElementById('maxDist1h').value) || 999;
-  const blackKBody = parseFloat(document.getElementById('blackKBody').value) || 0;
-  const minVol = parseFloat(document.getElementById('volFilter').value) || 0;
-  const search = document.getElementById('searchInput').value.trim().toUpperCase();
-
-  // 同步儲存到 config（防抖動，0.5秒後才送出）
-  clearTimeout(window._scannerSaveTimer);
-  window._scannerSaveTimer = setTimeout(() => {
-    fetch('/api/config', { method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        max_dist_to_upper_pct: maxDist,
-        max_dist_1h_upper_pct: maxDist1h,
-        black_k_min_body_pct: blackKBody
-      })
-    });
-  }, 500);
-
   let filtered = scannerData.filter(d => {
-    if (d.dist_to_upper_pct > maxDist) return false;
-    if (maxDist1h < 999 && d.dist_1h_pct != null && d.dist_1h_pct > maxDist1h) return false;
-    if (minVol > 0 && (d.volume_usdt || 0) < minVol) return false;
-    if (search && !d.symbol.includes(search)) return false;
     return true;
   });
 
@@ -1431,12 +1385,7 @@ const CONFIG_LABELS = {
   tp_tier1_roi:                  ["第一段止盈（本金獲利%）", "本金獲利達X%觸發第一段止盈"],
   tp_tier1_qty:                  ["第一段止盈平倉%", "觸發時平倉X%倉位"],
   tp_tier2_roi:                  ["第二段止盈（本金獲利%）", "本金獲利達X%觸發第二段，未到則以第一段價格保底出場"],
-  sl_tier1_loss_pct:             ["第一階停損門檻（本金虧%）", "本金虧損達此%觸發第一階停損"],
-  sl_tier1_close_pct:            ["第一階停損平倉%", "觸發時平倉X%倉位"],
-  sl_tier2_loss_pct:             ["第二階停損門檻（本金虧%）", "本金虧損達此%觸發第二階停損"],
-  sl_tier2_close_pct:            ["第二階停損平倉%", "觸發時平倉X%倉位"],
-  sl_tier3_loss_pct:             ["第三階停損門檻（本金虧%）", "本金虧損達此%觸發第三階停損"],
-  sl_tier3_close_pct:            ["第三階停損平倉%", "觸發時平倉X%倉位（建議設為剩餘全部）"],
+
   
   pause_open_rise_pct:           ["暫停加碼漲幅%", "持倉幣種現價比均入價上漲超過此%，停止加碼（價格回落自動恢復）"],
   
@@ -1459,7 +1408,6 @@ const CONFIG_LABELS = {
   prev_high_min_excess_pct:      ["前高保護最小超出幅度%", "前5根K棒中至少一根高點須超過現價X%才進候選池"],
   volume_spike_multiplier:       ["成交量異常倍數", "超過均量N倍跳過"],
   single_candle_max_rise_pct:    ["單K最大漲幅%", "超過此值不開倉"],
-  black_k_min_body_pct:          ["黑K最小實體%", "低於此值的黑K不觸發"],
   black_k_require_below_upper:   ["黑K高點須低於上軌", "勾選=啟用，高點在上軌上方時跳過"],
   black_k_max_upper_slope_pct:   ["上軌最大斜率%/根", "每根1分K上軌漲幅超過此值=動能太強，封鎖黑K"],
   black_k_upper_slope_lookback:  ["斜率計算回看根數", ""],
@@ -1479,9 +1427,8 @@ const CONFIG_SECTIONS = [
   { label: "持倉管理", color: "purple", icon: "📊",
     keys: ["max_symbols", "max_orders_per_symbol", "extend_orders_max", "extend_loss_pct", "scale_up_after_order", "scale_up_multiplier", "candidate_pool_size", "pre_scan_size", "candidate_pool_refresh_min"] },
   { label: "掃描篩選", color: "green", icon: "🔍",
-    keys: ["min_volume_usdt", "min_band_width_pct", "prev_high_min_excess_pct", "volume_spike_multiplier", "single_candle_max_rise_pct"] },
-  { label: "黑K濾網", color: "gray", icon: "🖤",
-    keys: ["black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback"] },
+    keys: ["min_volume_usdt", "max_dist_to_upper_pct", "max_dist_1h_upper_pct", "prev_high_min_excess_pct"] },
+
 ];
 
 const BOOL_KEYS = new Set(["black_k_require_below_upper"]);
