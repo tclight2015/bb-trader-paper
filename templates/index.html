@@ -709,8 +709,12 @@ select.filter-select {
 <!-- ========== PAGE: SCANNER ========== -->
 <div class="page" id="page-scanner">
   <div class="filter-bar">
-    <span class="filter-label">距上軌上限%</span>
-    <input class="filter-input" id="maxDist" type="number" value="5" min="0.1" max="100" step="0.1" onchange="renderScanner()">
+    <span class="filter-label">15分K距上軌%</span>
+    <input class="filter-input" id="maxDist" type="number" value="0.3" min="0.1" max="100" step="0.1" onchange="renderScanner()">
+    <span class="filter-label">1H距上軌%</span>
+    <input class="filter-input" id="maxDist1h" type="number" value="0.5" min="0.1" max="100" step="0.1" onchange="renderScanner()">
+    <span class="filter-label">黑K最小實體%</span>
+    <input class="filter-input" id="blackKBody" type="number" value="0.5" min="0" max="10" step="0.1" onchange="renderScanner()">
     <span class="filter-label">成交量篩選</span>
     <select class="filter-select" id="volFilter" onchange="renderScanner()">
       <option value="0">無限制</option>
@@ -794,12 +798,14 @@ select.filter-select {
             <th>幣種</th>
             <th>開倉時間</th>
             <th>平倉時間</th>
+            <th>持倉時間</th>
             <th>均入價</th>
             <th>平倉價</th>
             <th>筆數</th>
             <th>損益(USDT)</th>
             <th>本金%</th>
             <th>原因</th>
+            <th>滑點</th>
           </tr>
         </thead>
         <tbody id="historyBody">
@@ -1028,6 +1034,7 @@ async function loadPositions() {
 
       const shots = pos.sell_count ?? '—';
 
+      const openTimeStr = pos.open_time || null;
       return `
         <div class="position-card">
           <div class="position-header">
@@ -1035,6 +1042,7 @@ async function loadPositions() {
               <div class="position-sym">${sym.replace('USDT','')}</div>
               <span class="badge badge-short">SHORT</span>
               <span class="badge" style="background:#7c3aed20;color:#6d28d9;border:1px solid #7c3aed40">模擬</span>
+              ${openTimeStr ? `<span class="badge pos-timer" data-open="${openTimeStr}" style="background:#1e293b;color:#94a3b8;border:1px solid #334155;font-family:var(--mono);font-size:11px">—</span>` : ''}
             </div>
             <button class="btn btn-danger btn-xs" onclick="confirmClose('${sym}')">強制平倉</button>
           </div>
@@ -1143,6 +1151,13 @@ function confirmClose(symbol) {
 // ===== SCANNER =====
 async function loadScanner() {
   try {
+    // 從 config 讀回掃描器欄位值
+    const cfgRes = await fetch('/api/config');
+    const cfg = await cfgRes.json();
+    if (cfg.max_dist_to_upper_pct != null) document.getElementById('maxDist').value = cfg.max_dist_to_upper_pct;
+    if (cfg.max_dist_1h_upper_pct != null) document.getElementById('maxDist1h').value = cfg.max_dist_1h_upper_pct;
+    if (cfg.black_k_min_body_pct != null) document.getElementById('blackKBody').value = cfg.black_k_min_body_pct;
+
     const res = await fetch('/api/scanner/data');
     const data = await res.json();
     scannerData = data.data || [];
@@ -1159,11 +1174,26 @@ async function manualScanRefresh() {
 
 function renderScanner() {
   const maxDist = parseFloat(document.getElementById('maxDist').value) || 999;
+  const maxDist1h = parseFloat(document.getElementById('maxDist1h').value) || 999;
+  const blackKBody = parseFloat(document.getElementById('blackKBody').value) || 0;
   const minVol = parseFloat(document.getElementById('volFilter').value) || 0;
   const search = document.getElementById('searchInput').value.trim().toUpperCase();
 
+  // 同步儲存到 config（防抖動，0.5秒後才送出）
+  clearTimeout(window._scannerSaveTimer);
+  window._scannerSaveTimer = setTimeout(() => {
+    fetch('/api/config', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        max_dist_to_upper_pct: maxDist,
+        max_dist_1h_upper_pct: maxDist1h,
+        black_k_min_body_pct: blackKBody
+      })
+    });
+  }, 500);
+
   let filtered = scannerData.filter(d => {
     if (d.dist_to_upper_pct > maxDist) return false;
+    if (maxDist1h < 999 && d.dist_1h_pct != null && d.dist_1h_pct > maxDist1h) return false;
     if (minVol > 0 && (d.volume_usdt || 0) < minVol) return false;
     if (search && !d.symbol.includes(search)) return false;
     return true;
@@ -1260,12 +1290,21 @@ async function loadReports() {
           <td class="sym-name">${(h.symbol||'').replace('USDT','')}</td>
           <td style="font-family:var(--mono);font-size:11px">${fmtTime(h.open_time)}</td>
           <td style="font-family:var(--mono);font-size:11px">${fmtTime(h.close_time)}</td>
+          <td style="font-family:var(--mono);font-size:11px;color:var(--text3)">${h.hold_minutes ? (h.hold_minutes < 60 ? Math.round(h.hold_minutes) + '分' : (h.hold_minutes/60).toFixed(1) + '時') : '—'}</td>
           <td style="font-family:var(--mono)">${fmt(h.avg_entry_price)}</td>
           <td style="font-family:var(--mono)">${fmt(h.close_price)}</td>
           <td style="text-align:center">${h.order_count ?? '—'}</td>
           <td class="${pnlClass}" style="font-family:var(--mono)">${(h.total_pnl>=0?'+':'') + fmtUSDT(h.total_pnl)}</td>
           <td class="${pnlClass}" style="font-family:var(--mono)">${(capPct>=0?'+':'') + fmtPct(capPct)}</td>
           <td style="font-size:11px;color:var(--text3)">${h.close_reason||'—'}</td>
+          <td style="text-align:center">${(() => {
+            const s = h.slippage_pct;
+            if (s == null) return '<span style="color:var(--text3)">—</span>';
+            if (s < 0.1) return '<span title="正常 ' + s.toFixed(3) + '%">🟢</span>';
+            if (s < 0.3) return '<span title="偏高 ' + s.toFixed(3) + '%">🟡</span>';
+            if (s < 0.5) return '<span title="偏大 ' + s.toFixed(3) + '%">🟠</span>';
+            return '<span title="嚴重 ' + s.toFixed(3) + '%">🔴</span>';
+          })()}</td>
         </tr>`;
       }).join('');
     }
@@ -1387,12 +1426,20 @@ async function loadSettings() {
 
 const CONFIG_LABELS = {
   capital_per_order_pct:         ["每單保證金%", "每單保證金佔帳戶餘額%"],
+  time_stop_minutes:             ["時間停損（分鐘）", "第一槍開倉後X分鐘市價出清，0=停用"],
   leverage:                      ["槓桿倍數", ""],
-  take_profit_price_pct:         ["止盈（價格跌%）", "SHORT價格下跌此%止盈，1.0=跌1%"],
-  force_close_price_pct:         ["止損（價格漲%）", "SHORT價格上漲此%止損，2.5=漲2.5%"],
-  tp_limit_pct:                  ["止盈限價單佔比%", "限價單占止盈總量的%，剩餘為Stop-Market（預設100）"],
+  tp_tier1_roi:                  ["第一段止盈（本金獲利%）", "本金獲利達X%觸發第一段止盈"],
+  tp_tier1_qty:                  ["第一段止盈平倉%", "觸發時平倉X%倉位"],
+  tp_tier2_roi:                  ["第二段止盈（本金獲利%）", "本金獲利達X%觸發第二段，未到則以第一段價格保底出場"],
+  sl_tier1_loss_pct:             ["第一階停損門檻（本金虧%）", "本金虧損達此%觸發第一階停損"],
+  sl_tier1_close_pct:            ["第一階停損平倉%", "觸發時平倉X%倉位"],
+  sl_tier2_loss_pct:             ["第二階停損門檻（本金虧%）", "本金虧損達此%觸發第二階停損"],
+  sl_tier2_close_pct:            ["第二階停損平倉%", "觸發時平倉X%倉位"],
+  sl_tier3_loss_pct:             ["第三階停損門檻（本金虧%）", "本金虧損達此%觸發第三階停損"],
+  sl_tier3_close_pct:            ["第三階停損平倉%", "觸發時平倉X%倉位（建議設為剩餘全部）"],
+  
   pause_open_rise_pct:           ["暫停加碼漲幅%", "持倉幣種現價比均入價上漲超過此%，停止加碼（價格回落自動恢復）"],
-  force_close_capital_pct:       ["強制平倉（本金-%）", "單幣種本金虧損此%時強制市價全平（負數）"],
+  
   margin_usage_limit_pct:        ["保證金使用率上限%", "全帳戶保證金使用率超過此值停止開新倉"],
   grid_spacing_pct:              ["網格間距%", "隱形網格每格間距%"],
   grid_count:                    ["每次網格數量", "每次成交後建立的隱形網格數"],
@@ -1420,9 +1467,11 @@ const CONFIG_LABELS = {
 
 const CONFIG_SECTIONS = [
   { label: "開單設定", color: "blue", icon: "💰",
-    keys: ["capital_per_order_pct", "leverage"] },
-  { label: "止盈止損", color: "red", icon: "🛡",
-    keys: ["take_profit_price_pct", "force_close_price_pct", "tp_limit_pct", "pause_open_rise_pct", "force_close_capital_pct"] },
+    keys: ["capital_per_order_pct", "leverage", "time_stop_minutes"] },
+  { label: "止盈設定", color: "red", icon: "🛡",
+    keys: ["tp_tier1_roi", "tp_tier1_qty", "tp_tier2_roi", "pause_open_rise_pct"] },
+  { label: "分階停損", color: "darkred", icon: "🔴",
+    keys: ["sl_tier1_loss_pct", "sl_tier1_close_pct", "sl_tier2_loss_pct", "sl_tier2_close_pct", "sl_tier3_loss_pct", "sl_tier3_close_pct"] },
   { label: "保護機制", color: "orange", icon: "⚠️",
     keys: ["margin_usage_limit_pct"] },
   { label: "網格設定", color: "teal", icon: "📐",
@@ -1430,9 +1479,9 @@ const CONFIG_SECTIONS = [
   { label: "持倉管理", color: "purple", icon: "📊",
     keys: ["max_symbols", "max_orders_per_symbol", "extend_orders_max", "extend_loss_pct", "scale_up_after_order", "scale_up_multiplier", "candidate_pool_size", "pre_scan_size", "candidate_pool_refresh_min"] },
   { label: "掃描篩選", color: "green", icon: "🔍",
-    keys: ["min_volume_usdt", "max_dist_to_upper_pct", "max_dist_1h_upper_pct", "min_band_width_pct", "prev_high_min_excess_pct", "volume_spike_multiplier", "single_candle_max_rise_pct"] },
+    keys: ["min_volume_usdt", "min_band_width_pct", "prev_high_min_excess_pct", "volume_spike_multiplier", "single_candle_max_rise_pct"] },
   { label: "黑K濾網", color: "gray", icon: "🖤",
-    keys: ["black_k_min_body_pct", "black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback"] },
+    keys: ["black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback"] },
 ];
 
 const BOOL_KEYS = new Set(["black_k_require_below_upper"]);
@@ -1524,6 +1573,26 @@ function startAutoRefresh() {
     if (currentPage === 'scanner') loadScanner();
   }, 15000);
 }
+
+// ===== 持倉計時器（每秒更新）=====
+function fmtElapsed(openTimeStr) {
+  if (!openTimeStr) return '—';
+  const open = new Date(openTimeStr.replace(' ', 'T') + '+08:00');
+  const now = new Date();
+  const sec = Math.floor((now - open) / 1000);
+  if (sec < 0) return '—';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) return `${h}時${String(m).padStart(2,'0')}分`;
+  return `${m}分${String(s).padStart(2,'0')}秒`;
+}
+
+setInterval(() => {
+  document.querySelectorAll('.pos-timer[data-open]').forEach(el => {
+    el.textContent = fmtElapsed(el.dataset.open);
+  });
+}, 1000);
 
 
 // ===== LOGS =====

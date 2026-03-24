@@ -137,6 +137,10 @@ class BaseExchange(ABC):
         """延長 listen key 有效期"""
         pass
 
+    async def get_mark_price(self, symbol: str) -> float | None:
+        """取得標記價格，子類別可覆寫；預設從 price_cache fallback"""
+        return None
+
     # ===== 識別 =====
 
     @property

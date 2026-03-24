@@ -32,6 +32,14 @@
 | v4.16 | 修正黑K無限循環bug：開倉成功後不再 pop `black_k_last_k_time`，保留防重複機制，防止同一根K棒反覆觸發黑K開倉 | — |
 | v4.17 | 設定頁儲存時若 `grid_spacing_pct` 或 `grid_count` 有變更，自動對所有現有持倉取消舊網格掛單並以新設定重算 | — |
 | v4.18 | 黑K濾網2+3合併：斜率過陡 AND 高點在上軌上方才擋；斜率過陡但高點在上軌下方放行；斜率不陡無論高點在哪都放行 | — |
+| v4.32 | 正式版滑點偵測：`close_symbol` 下市價單前抓標記價格，成交後計算滑點%；存入 DB `slippage_pct`/`mark_price` 欄位；報表平倉清單最後一欄顯示燈號（🟢<0.1% / 🟡<0.3% / 🟠<0.5% / 🔴≥0.5%），滑點可供調整倉位大小參考 | — |
+| v4.31 | 新增時間停損（`time_stop_minutes`，預設0=停用）：第一槍開倉後超過X分鐘未止盈，市價出清並記DB；各幣獨立計時；設定頁「開單設定」區塊可調 | — |
+| v4.30 | 儀表板持倉卡片加入即時計時器，顯示開倉至今已過時間（每秒更新，格式：X時XX分 / XX分XX秒）；`/api/positions` 新增 `open_time` 欄位 | — |
+| v4.29 | 修正開倉時間顯示bug（open_time 未傳入 DB 導致開倉=平倉時間）；state 加入 `symbol_open_time` 記錄第一筆開倉時間，平倉時傳入 DB；報表新增「持倉時間」欄位（分/時顯示） | — |
+| v4.28 | 分階停損改為預掛模式：SELL成交後立即預掛三張停損限價單；虧損回落到第一階門檻以下時取消並重掛（持倉重新計算比例）；移除 `symbol_sl_tiers_done`，改用 `symbol_sl_orders` 記錄三張單的 order_id；`tp_tier1_roi`/`tp_tier2_roi` 預設改為30%/40% | — |
+| v4.27 | 分段止盈取代原有止盈：移除 `take_profit_price_pct`/`tp_limit_pct`；新增 `tp_tier1_roi`/`tp_tier1_qty`/`tp_tier2_roi`；第一段限價單平X%倉位，第二段限價單平剩餘；第二段啟動後追蹤保底：若價格反彈回第一段目標價則取消第二段改市價全出；止盈均以本金獲利率計算 | — |
+| v4.26 | 掃描器頁新增三個欄位（15分K距上軌%/1H距上軌%/黑K最小實體%），直接在掃描器頁調整並自動儲存到config；`max_dist_1h_upper_pct` 從排序改為硬性過濾；`max_dist_to_upper_pct` 預設0.3%、`max_dist_1h_upper_pct` 預設0.5%；`black_k_min_body_pct` 從設定頁移至掃描器頁 | — |
+| v4.25 | 分階停損取代原有止損：移除 `force_close_price_pct`/`force_close_capital_pct`；新增三階停損（`sl_tier1~3_loss_pct`/`close_pct`）；每階觸發時掛限價單（現價×1.001）平對應比例倉位；三階全觸發後取消所有掛單；`place_tp_sl` 移除止損掛單只保留止盈；設定頁新增「分階停損」區塊 | — |
 | v4.24 | 黑K偵測移至持倉迴圈：原本在候選池迴圈偵測，持倉幣掉出候選池後就不再偵測黑K加碼；改為在持倉迴圈（第1步）對所有持倉幣執行，候選池只負責第一次觸碰上軌開倉 | — |
 | v4.23 | 前高保護邏輯重寫：固定回看5根K棒，改用最大超出幅度%為主指標（`prev_high_score ≈ max_excess + count*0.2`）；候選池門檻改為 `prev_high_min_excess_pct`（預設1.0%），至少一根高點須超過現價1%才進池；移除 `prev_high_lookback` 設定欄位；設定頁同步更新 | — |
 | v4.22 | 修正平倉重複寫DB：止損單WS成交後 handle_close_fill 與 close_symbol（FORCE_CLOSE）同時觸發導致報表出現兩筆；加入 `closing_symbols` 標記，close_symbol 執行中時 handle_close_fill 自動跳過 | — |

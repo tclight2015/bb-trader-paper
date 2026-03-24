@@ -43,7 +43,9 @@ def init_db():
             total_pnl REAL,
             roe_pct REAL,
             close_reason TEXT,
-            order_count INTEGER DEFAULT 1
+            order_count INTEGER DEFAULT 1,
+            mark_price REAL,
+            slippage_pct REAL
         )
     """)
 
@@ -108,6 +110,8 @@ def _migrate(c):
     migrations = [
         ("trade_history",   "exchange",     "TEXT DEFAULT 'binance'"),
         ("trade_history",   "order_count",  "INTEGER DEFAULT 1"),
+        ("trade_history",   "mark_price",   "REAL"),
+        ("trade_history",   "slippage_pct", "REAL"),
         ("trade_analytics", "exchange",     "TEXT DEFAULT 'binance'"),
         ("trade_analytics", "hold_minutes", "REAL"),
         ("trade_analytics", "filled_1h",    "INTEGER DEFAULT 0"),
@@ -126,17 +130,20 @@ def _migrate(c):
 
 def record_trade_close(symbol, avg_entry, close_price, total_qty,
                        total_margin, total_pnl, roe_pct, close_reason,
-                       open_time=None, exchange="binance", order_count=1):
+                       open_time=None, exchange="binance", order_count=1,
+                       mark_price=None, slippage_pct=None):
     conn = get_conn()
     now = datetime.now(TZ_TAIPEI).strftime("%Y-%m-%d %H:%M:%S")
     conn.execute("""
         INSERT INTO trade_history
         (symbol, exchange, open_time, close_time, avg_entry_price, close_price,
-         total_quantity, total_margin, total_pnl, roe_pct, close_reason, order_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         total_quantity, total_margin, total_pnl, roe_pct, close_reason, order_count,
+         mark_price, slippage_pct)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (symbol, exchange, open_time or now, now,
           avg_entry, close_price, total_qty,
-          total_margin, total_pnl, roe_pct, close_reason, order_count))
+          total_margin, total_pnl, roe_pct, close_reason, order_count,
+          mark_price, slippage_pct))
     conn.commit()
     conn.close()
 

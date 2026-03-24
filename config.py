@@ -10,7 +10,8 @@ DEFAULT_CONFIG = {
     "testnet": os.environ.get("BINANCE_TESTNET", "true").lower() == "true",
 
     # === 開單設定 ===
-    "capital_per_order_pct": 1.0,      # 每單保證金佔帳戶餘額%
+    "capital_per_order_pct": 1.0,
+    "time_stop_minutes": 0,            # 時間停損：第一槍後X分鐘市價出清（0=停用）      # 每單保證金佔帳戶餘額%
     "leverage": 30,                     # 槓桿倍數
     # notional = 帳戶餘額 * capital_per_order_pct% * leverage
 
@@ -26,22 +27,29 @@ DEFAULT_CONFIG = {
     "candidate_pool_size": 10,          # 候選監控池大小
     "pre_scan_size": 20,               # 從15分K取前N個再篩候選池
 
-    # === 止盈止損（基於價格幅度%，與槓桿無關）===
-    "take_profit_price_pct": 1.0,      # 止盈：SHORT價格下跌X%，1.0 = 跌1%止盈
-    "force_close_price_pct": 2.5,      # 止損：SHORT價格上漲X%，2.5 = 漲2.5%止損
-    "tp_limit_pct": 100,               # 止盈止損拆單：限價單佔%（剩餘為Stop-Market）
+    # === 分段止盈（基於本金獲利率%）===
+    "tp_tier1_roi": 30.0,              # 第一段止盈：本金獲利達X%
+    "tp_tier1_qty": 50.0,              # 第一段止盈：平倉X%倉位
+    "tp_tier2_roi": 40.0,              # 第二段止盈：本金獲利達X%（剩餘全出，未到則以第一段保底）
 
     # === 開倉保護（基於本金%）===
-    "pause_open_rise_pct": 999.0,       # 暫停對該幣加碼：現價比均入價上漲X%（可恢復）
-    "force_close_capital_pct": -90.0,  # 強制平倉：單幣本金虧X%
+    "pause_open_rise_pct": 999.0,      # 暫停對該幣加碼：現價比均入價上漲X%（可恢復）
+
+    # === 分階停損（基於本金虧損率%）===
+    "sl_tier1_loss_pct": 60.0,         # 第一階停損：本金虧損達X%
+    "sl_tier1_close_pct": 33.0,        # 第一階停損：平倉X%倉位
+    "sl_tier2_loss_pct": 75.0,         # 第二階停損：本金虧損達X%
+    "sl_tier2_close_pct": 33.0,        # 第二階停損：平倉X%倉位
+    "sl_tier3_loss_pct": 90.0,         # 第三階停損：本金虧損達X%
+    "sl_tier3_close_pct": 34.0,        # 第三階停損：平倉X%倉位（剩餘全部）
 
     # === 保證金水位保護 ===
     "margin_usage_limit_pct": 75.0,    # 全帳戶保證金使用率上限%
 
     # === 掃描篩選條件 ===
     "min_volume_usdt": 5_000_000,      # 最低24H成交量（USDT），0=無限制
-    "max_dist_to_upper_pct": 0.5,      # 距15分K上軌最大距離%
-    "max_dist_1h_upper_pct": 1.0,      # 距1H上軌最大距離%
+    "max_dist_to_upper_pct": 0.3,      # 距15分K上軌最大距離%（硬性條件）
+    "max_dist_1h_upper_pct": 0.5,      # 距1H上軌最大距離%（硬性條件）
     "min_band_width_pct": 1.0,         # 最低BB帶寬%
     "prev_high_min_excess_pct": 1.0,   # 前高保護：前5根中至少一根高點須超過現價X%
 
@@ -50,7 +58,7 @@ DEFAULT_CONFIG = {
     "single_candle_max_rise_pct": 1.0, # 單K最大漲幅%（超過此值不開倉）
 
     # === 黑K濾網 ===
-    "black_k_min_body_pct": 0.5,       # 黑K實體最小幅度%（低於此值不觸發）
+    "black_k_min_body_pct": 0.5,       # 黑K實體最小幅度%（掃描器設定，低於此值不觸發）
     "black_k_require_below_upper": True, # 黑K最高點必須低於1分K上軌才觸發
     "black_k_max_upper_slope_pct": 0.05, # 上軌每根K最大漲幅%（超過表示動能太強，不開空）
     "black_k_upper_slope_lookback": 5,   # 計算上軌斜率的回看根數

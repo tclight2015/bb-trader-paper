@@ -50,6 +50,10 @@ state = {
     "symbol_realized_pnl": {},  # symbol -> 累積已實現損益（分批平倉時累加，完全平倉後記DB）
     "pending_open": set(),      # 已掛開倉單但尚未成交的幣種（防止超過 max_symbols）
     "closing_symbols": set(),   # 正在由 close_symbol 處理平倉的幣種（防止 handle_close_fill 重複寫DB）
+    "symbol_sl_orders": {},     # symbol -> {1: order_id, 2: order_id, 3: order_id} 三階停損掛單
+    "symbol_open_time": {},     # symbol -> 第一筆開倉時間（ISO string）
+    "tp_tier1_done": set(),      # 第一段止盈已成交的幣種
+    "tp_tier2_guard": {},        # symbol -> 第二段追蹤保底價（=第一段目標價）
     "symbol_setup_done": set(),
     "symbol_filters_cache": {},
 
@@ -405,6 +409,9 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
         if side == "SELL" and status == "FILLED":
             state["symbol_sell_count"][symbol] = state["symbol_sell_count"].get(symbol, 0) + 1
             state["pending_open"].discard(symbol)  # 已確認成交，移出待確認集合
+            # 第一筆開倉時記錄時間
+            if symbol not in state["symbol_open_time"]:
+                state["symbol_open_time"][symbol] = datetime.now(TZ_TAIPEI).strftime("%Y-%m-%d %H:%M:%S")
             # 累計總保證金
             balance = get_balance_cached()
             if balance and balance.get("total", 0) > 0:
@@ -422,6 +429,7 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
             update_hidden_grids(symbol, fill_price, cfg)
             await asyncio.sleep(0.5)
             await place_tp_sl(exchange, cfg, symbol)
+            await place_sl_tiers(exchange, cfg, symbol)
 
         elif side == "BUY" and status == "FILLED" and realized_pnl != 0:
             # 累積已實現損益（分批止盈時每張都累加）
@@ -433,7 +441,12 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
             if not pos_after or pos_after.get("qty", 0) <= 0:
                 await handle_close_fill(exchange, cfg, symbol, fill_price, fill_qty)
             else:
-                # 持倉還有，重掛止盈止損
+                # 持倉還有：檢查是否第一段止盈成交
+                tp1_order_id = state["tp_sl_orders"].get(symbol, {}).get("tp1_limit")
+                if tp1_order_id and str(order_id) == tp1_order_id:
+                    state["tp_tier1_done"].add(symbol)
+                    write_log("TP_TIER", f"第一段止盈成交 @ {fill_price}，重掛第二段", symbol=symbol)
+                # 重掛止盈
                 await asyncio.sleep(0.5)
                 await place_tp_sl(exchange, cfg, symbol)
 
@@ -465,11 +478,12 @@ async def handle_close_fill(exchange: BaseExchange, cfg: dict, symbol: str,
     else:
         close_reason = "CLOSE_WS"
 
+    open_time = state["symbol_open_time"].get(symbol)
     record_trade_close(
         symbol=symbol, avg_entry=avg_entry, close_price=close_price,
         total_qty=qty, total_margin=total_margin, total_pnl=total_pnl,
         roe_pct=roe_pct, close_reason=close_reason,
-        exchange=exchange.name, order_count=order_count
+        exchange=exchange.name, order_count=order_count, open_time=open_time
     )
 
     candidate_info = next((c for c in state["candidate_pool"] if c["symbol"] == symbol), {})
@@ -657,15 +671,14 @@ async def check_and_place_hidden_grids(exchange: BaseExchange, cfg: dict, symbol
 
 # ===== 止盈止損 =====
 
-def calc_tp_price(avg_entry, cfg):
-    return avg_entry * (1 - cfg.get("take_profit_price_pct", 1.0) / 100)
-
-
-def calc_sl_price(avg_entry, cfg):
-    return avg_entry * (1 + cfg.get("force_close_price_pct", 3.0) / 100)
+def calc_tp_tier_price(avg_entry, roi_pct, leverage):
+    """本金獲利率轉換為價格：SHORT 跌幅 = roi_pct / leverage"""
+    price_drop_pct = roi_pct / leverage
+    return avg_entry * (1 - price_drop_pct / 100)
 
 
 async def place_tp_sl(exchange: BaseExchange, cfg: dict, symbol: str):
+    """分段止盈：第一段限價，第二段限價+追蹤保底"""
     pos = state["_binance_positions_cache"].get(symbol)
     if not pos or pos.get("qty", 0) <= 0:
         pos = await get_position_rest(exchange, symbol)
@@ -681,75 +694,115 @@ async def place_tp_sl(exchange: BaseExchange, cfg: dict, symbol: str):
 
     avg_entry = pos["avg_entry"]
     total_qty = pos["qty"]
-    tp_price_raw = calc_tp_price(avg_entry, cfg)
-    sl_price_raw = calc_sl_price(avg_entry, cfg)
+    leverage = cfg.get("leverage", 30)
 
-    if tp_price_raw >= avg_entry or sl_price_raw <= avg_entry:
-        write_log("ERROR", f"止盈止損價格方向錯誤，跳過", symbol=symbol)
+    tp1_roi = cfg.get("tp_tier1_roi", 10.0)
+    tp1_qty_pct = cfg.get("tp_tier1_qty", 50.0)
+    tp2_roi = cfg.get("tp_tier2_roi", 20.0)
+
+    tp1_price_raw = calc_tp_tier_price(avg_entry, tp1_roi, leverage)
+    tp2_price_raw = calc_tp_tier_price(avg_entry, tp2_roi, leverage)
+
+    if tp1_price_raw >= avg_entry or tp2_price_raw >= avg_entry:
+        write_log("ERROR", f"止盈價格方向錯誤，跳過", symbol=symbol)
         return
 
     filters = await get_filters_cached(exchange, symbol)
     if not filters:
         return
 
-    tp_price = align_price(tp_price_raw, filters["tick_size"])
-    sl_price = align_price(sl_price_raw, filters["tick_size"])
+    tp1_price = align_price(tp1_price_raw, filters["tick_size"])
+    tp2_price = align_price(tp2_price_raw, filters["tick_size"])
 
-    # 取消所有掛單（確保殘留的舊止盈止損單都被清掉）
+    # 取消舊掛單
     try:
         await exchange.cancel_all_orders(symbol)
     except Exception:
         pass
-    old = state["tp_sl_orders"].get(symbol, {})
-    for order_id in old.values():
-        try:
-            await exchange.cancel_order(symbol, order_id)
-        except Exception:
-            pass
     state["tp_sl_orders"][symbol] = {}
 
-    tp_limit_pct = cfg.get("tp_limit_pct", 50)
-    limit_qty = align_qty(total_qty * (tp_limit_pct / 100), filters["step_size"])
-    stop_qty = align_qty(total_qty - limit_qty, filters["step_size"])
+    tier1_done = symbol in state.get("tp_tier1_done", set())
     new_orders = {}
-    tp_pct = round((avg_entry - tp_price) / avg_entry * 100, 3)
-    sl_pct = round((sl_price - avg_entry) / avg_entry * 100, 3)
 
-    if limit_qty > 0:
-        r = await exchange.place_limit_order(symbol, "BUY", limit_qty, tp_price, reduce_only=True)
-        if "orderId" in r:
-            new_orders["tp_limit"] = str(r["orderId"])
-            logger.info(f"✅ 止盈限價 {symbol} @ {tp_price} (-{tp_pct}%)")
-        else:
-            write_log("ERROR", f"止盈限價單失敗: {r.get('msg','')}", symbol=symbol, detail={"resp": r})
+    if not tier1_done:
+        # 第一段：平 tp1_qty_pct% 倉位
+        t1_qty = align_qty(total_qty * tp1_qty_pct / 100, filters["step_size"])
+        if t1_qty > 0:
+            r = await exchange.place_limit_order(symbol, "BUY", t1_qty, tp1_price, reduce_only=True)
+            if r and "orderId" in r:
+                new_orders["tp1_limit"] = str(r["orderId"])
+                logger.info(f"✅ 第一段止盈 {symbol} @ {tp1_price} (ROI={tp1_roi}%)")
+            else:
+                write_log("ERROR", f"第一段止盈掛單失敗", symbol=symbol, detail={"resp": r})
 
-    if stop_qty > 0:
-        r = await exchange.place_stop_market_order(symbol, "BUY", stop_qty, tp_price, reduce_only=True)
-        if "orderId" in r:
-            new_orders["tp_stop"] = str(r["orderId"])
+    # 第二段：剩餘全部
+    t2_qty = align_qty(total_qty * (1 - tp1_qty_pct / 100) if not tier1_done else total_qty,
+                       filters["step_size"])
+    if t2_qty > 0:
+        r = await exchange.place_limit_order(symbol, "BUY", t2_qty, tp2_price, reduce_only=True)
+        if r and "orderId" in r:
+            new_orders["tp2_limit"] = str(r["orderId"])
+            # 記錄第二段追蹤保底價（= 第一段目標價）
+            state.setdefault("tp_tier2_guard", {})[symbol] = tp1_price
+            logger.info(f"✅ 第二段止盈 {symbol} @ {tp2_price} (ROI={tp2_roi}%) 保底={tp1_price}")
         else:
-            write_log("ERROR", f"止盈Stop單失敗: {r.get('msg','')}", symbol=symbol, detail={"resp": r})
-
-    if limit_qty > 0:
-        r = await exchange.place_limit_order(symbol, "BUY", limit_qty, sl_price, reduce_only=True)
-        if "orderId" in r:
-            new_orders["sl_limit"] = str(r["orderId"])
-            logger.info(f"✅ 止損限價 {symbol} @ {sl_price} (+{sl_pct}%)")
-        else:
-            write_log("ERROR", f"止損限價單失敗: {r.get('msg','')}", symbol=symbol, detail={"resp": r})
-
-    if stop_qty > 0:
-        r = await exchange.place_stop_market_order(symbol, "BUY", stop_qty, sl_price, reduce_only=True)
-        if "orderId" in r:
-            new_orders["sl_stop"] = str(r["orderId"])
-        else:
-            write_log("ERROR", f"止損Stop單失敗: {r.get('msg','')}", symbol=symbol, detail={"resp": r})
+            write_log("ERROR", f"第二段止盈掛單失敗", symbol=symbol, detail={"resp": r})
 
     state["tp_sl_orders"][symbol] = new_orders
     write_log("TP_SL_ORDER",
-              f"止盈止損更新 avg={avg_entry:.6f} tp={tp_price}(-{tp_pct}%) sl={sl_price}(+{sl_pct}%)",
-              symbol=symbol, detail={"avg_entry": avg_entry, "tp_price": tp_price,
-                                     "sl_price": sl_price, "orders": new_orders})
+              f"止盈更新 avg={avg_entry:.6f} tp1={tp1_price}(ROI={tp1_roi}%) tp2={tp2_price}(ROI={tp2_roi}%)",
+              symbol=symbol, detail={"avg_entry": avg_entry, "tp1_price": tp1_price,
+                                     "tp2_price": tp2_price, "orders": new_orders})
+
+
+async def place_sl_tiers(exchange: BaseExchange, cfg: dict, symbol: str):
+    """預掛三階停損單，每次開倉/加碼/回落重置時呼叫"""
+    pos = state["_binance_positions_cache"].get(symbol, {})
+    total_qty = pos.get("qty", 0)
+    avg_entry = state["symbol_avg_entry"].get(symbol) or pos.get("avg_entry", 0)
+    total_margin = state["symbol_total_margin"].get(symbol, 0) or pos.get("initial_margin", 0)
+    if total_qty <= 0 or avg_entry <= 0 or total_margin <= 0:
+        return
+
+    leverage = cfg.get("leverage", 30)
+    tiers = [
+        (cfg.get("sl_tier1_loss_pct", 60),  cfg.get("sl_tier1_close_pct", 33),  1),
+        (cfg.get("sl_tier2_loss_pct", 75),  cfg.get("sl_tier2_close_pct", 33),  2),
+        (cfg.get("sl_tier3_loss_pct", 90),  cfg.get("sl_tier3_close_pct", 34),  3),
+    ]
+
+    filters = await get_filters_cached(exchange, symbol)
+    if not filters:
+        return
+
+    # 取消現有停損掛單
+    old_sl_orders = state["symbol_sl_orders"].get(symbol, {})
+    for tier_idx, oid in old_sl_orders.items():
+        try:
+            await exchange.cancel_order(symbol, oid)
+        except Exception:
+            pass
+    state["symbol_sl_orders"][symbol] = {}
+
+    new_sl_orders = {}
+    for loss_threshold, close_pct, tier_idx in tiers:
+        # 停損價 = 均入價 × (1 + loss_threshold/leverage/100)
+        sl_price_raw = avg_entry * (1 + loss_threshold / leverage / 100)
+        sl_price = align_price(sl_price_raw, filters["tick_size"])
+        close_qty = align_qty(total_qty * close_pct / 100, filters["step_size"])
+        if close_qty <= 0:
+            continue
+
+        r = await exchange.place_limit_order(symbol, "BUY", close_qty, sl_price, reduce_only=True)
+        if r and "orderId" in r:
+            new_sl_orders[tier_idx] = str(r["orderId"])
+            logger.info(f"🔴 第{tier_idx}階停損掛出 {symbol} @ {sl_price} (虧損{loss_threshold}%本金)")
+        else:
+            write_log("ERROR", f"第{tier_idx}階停損掛單失敗", symbol=symbol, detail={"resp": r})
+
+    state["symbol_sl_orders"][symbol] = new_sl_orders
+    write_log("SL_TIER", f"停損單重掛完成，共{len(new_sl_orders)}張",
+              symbol=symbol, detail={"orders": new_sl_orders, "avg_entry": avg_entry})
 
 
 # ===== 開倉 =====
@@ -863,6 +916,9 @@ async def close_symbol(exchange: BaseExchange, cfg: dict, symbol: str, reason: s
         avg_entry = pos.get("avg_entry", state["symbol_avg_entry"].get(symbol, 0))
         margin = state["symbol_total_margin"].get(symbol, 0) or pos.get("initial_margin", 0)
 
+        # 下單前抓標記價格（用於滑點計算）
+        mark_price = await exchange.get_mark_price(symbol)
+
         result = await exchange.place_market_order(symbol, "BUY", total_qty, reduce_only=True)
         actual_close_price = None
         if result and "avgPrice" in result:
@@ -874,6 +930,15 @@ async def close_symbol(exchange: BaseExchange, cfg: dict, symbol: str, reason: s
             await asyncio.sleep(0.5)
             actual_close_price = get_cached_price(symbol) or avg_entry
 
+        # 計算滑點（只有市價單才有意義）
+        slippage_pct = None
+        if mark_price and mark_price > 0 and actual_close_price:
+            slippage_pct = round(abs(actual_close_price - mark_price) / mark_price * 100, 4)
+            write_log("SLIPPAGE", f"滑點={slippage_pct:.4f}% 標記={mark_price} 成交={actual_close_price}",
+                      symbol=symbol, detail={"mark_price": mark_price,
+                                             "close_price": actual_close_price,
+                                             "slippage_pct": slippage_pct})
+
         # 累計已實現損益（手動/強制平倉也要加總）
         pnl_from_market = (avg_entry - actual_close_price) * total_qty
         accumulated_pnl = state["symbol_realized_pnl"].get(symbol, 0)
@@ -881,11 +946,13 @@ async def close_symbol(exchange: BaseExchange, cfg: dict, symbol: str, reason: s
         roe_pct = (total_pnl / margin * 100) if margin > 0 else 0
         order_count = state["symbol_sell_count"].get(symbol, 1)
 
+        open_time = state["symbol_open_time"].get(symbol)
         record_trade_close(
             symbol=symbol, avg_entry=avg_entry, close_price=actual_close_price,
             total_qty=total_qty, total_margin=margin, total_pnl=total_pnl,
             roe_pct=roe_pct, close_reason=reason, exchange=exchange.name,
-            order_count=order_count
+            order_count=order_count, open_time=open_time,
+            mark_price=mark_price, slippage_pct=slippage_pct
         )
 
         candidate_info = next((c for c in state["candidate_pool"] if c["symbol"] == symbol), {})
@@ -928,6 +995,10 @@ def _clear_symbol_state(symbol: str):
     state["symbol_avg_entry"].pop(symbol, None)
     state["symbol_realized_pnl"].pop(symbol, None)
     state["closing_symbols"].discard(symbol)
+    state["symbol_sl_orders"].pop(symbol, None)
+    state["symbol_open_time"].pop(symbol, None)
+    state["tp_tier1_done"].discard(symbol)
+    state["tp_tier2_guard"].pop(symbol, None)
     state["margin_pause"] = False
 
 
@@ -995,14 +1066,13 @@ async def check_black_k(exchange: BaseExchange, symbol: str, cfg: dict = None) -
     return highest
 
 
-# ===== 持倉保護（漲幅暫停 + 強制平倉）=====
+# ===== 持倉保護（漲幅暫停加碼 + 分階停損）=====
 
 async def check_position_protection(exchange: BaseExchange, cfg: dict, symbol: str):
     """
     兩層保護，每輪都跑：
     1. 現價上漲超過 pause_open_rise_pct% → 停止對該幣加碼（可恢復）
-       現價回落到觸發線以下 → 自動解除
-    2. 本金虧損超過 force_close_capital_pct% → 強制平倉
+    2. 本金虧損達三個門檻 → 分階停損（限價單，各觸發一次）
     """
     cached_pos = state["_binance_positions_cache"].get(symbol)
     if not cached_pos:
@@ -1018,7 +1088,7 @@ async def check_position_protection(exchange: BaseExchange, cfg: dict, symbol: s
 
     # === 層1：漲幅暫停加碼（可恢復）===
     pause_rise_pct = cfg.get("pause_open_rise_pct", 2.0)
-    rise_pct = (current_price - avg_entry) / avg_entry * 100  # SHORT：上漲為正=不利
+    rise_pct = (current_price - avg_entry) / avg_entry * 100
 
     if rise_pct >= pause_rise_pct:
         if symbol not in state["symbol_open_paused"]:
@@ -1035,23 +1105,23 @@ async def check_position_protection(exchange: BaseExchange, cfg: dict, symbol: s
                                              "current_price": current_price,
                                              "rise_pct": round(rise_pct, 3)})
 
-    # === 層2：本金虧損強制平倉 ===
+    # === 層2：停損回落重置監測 ===
     total_qty = cached_pos["qty"]
-    margin = cached_pos.get("initial_margin", 0)
-    if margin <= 0:
+    total_margin = state["symbol_total_margin"].get(symbol, 0) or cached_pos.get("initial_margin", 0)
+    if total_margin <= 0:
         return
 
     unrealized_pnl = (avg_entry - current_price) * total_qty
-    roe_pct = unrealized_pnl / margin * 100
-    capital_return_pct = roe_pct / cfg["leverage"]
+    roe_pct = unrealized_pnl / total_margin * 100
+    capital_loss_pct = -(roe_pct / cfg.get("leverage", 30))  # 正數=虧損%
 
-    if capital_return_pct <= cfg["force_close_capital_pct"]:
-        # 再確認持倉還存在（避免止損單剛成交、handle_close_fill 已寫DB，又重複觸發）
-        pos_check = state["_binance_positions_cache"].get(symbol, {})
-        if pos_check.get("qty", 0) <= 0:
-            return
-        write_log("ROE_FORCE", f"本金虧損{capital_return_pct:.1f}%，強制平倉", symbol=symbol)
-        await close_symbol(exchange, cfg, symbol, reason="FORCE_CLOSE")
+    tier1_threshold = cfg.get("sl_tier1_loss_pct", 60)
+
+    # 若有停損單且虧損回落到第一階門檻以下 → 重算重掛
+    if state["symbol_sl_orders"].get(symbol) and capital_loss_pct < tier1_threshold:
+        write_log("SL_TIER", f"虧損回落至{capital_loss_pct:.1f}%（門檻{tier1_threshold}%），重掛停損單",
+                  symbol=symbol, detail={"capital_loss_pct": round(capital_loss_pct, 2)})
+        await place_sl_tiers(exchange, cfg, symbol)
 
 
 # ===== 候選池 =====
@@ -1104,6 +1174,10 @@ async def reset_system(exchange: BaseExchange, cfg: dict) -> dict:
     state["symbol_filters_cache"].clear()
     state["balance_cache"] = None
     state["closing_symbols"].discard(symbol)
+    state["symbol_sl_orders"].pop(symbol, None)
+    state["symbol_open_time"].pop(symbol, None)
+    state["tp_tier1_done"].discard(symbol)
+    state["tp_tier2_guard"].pop(symbol, None)
     state["margin_pause"] = False
     state["_binance_positions_cache"] = all_positions
 
@@ -1207,6 +1281,22 @@ async def trading_loop():
             # 1. 監控現有持倉
             for symbol in list(open_syms):
                 try:
+                    # 時間停損檢查
+                    time_stop = cfg.get("time_stop_minutes", 0)
+                    if time_stop > 0:
+                        open_time_str = state["symbol_open_time"].get(symbol)
+                        if open_time_str:
+                            try:
+                                t_open = datetime.strptime(open_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_TAIPEI)
+                                elapsed = (datetime.now(TZ_TAIPEI) - t_open).total_seconds() / 60
+                                if elapsed >= time_stop:
+                                    write_log("TIME_STOP", f"持倉超過{time_stop}分鐘（已過{elapsed:.1f}分），時間停損出清",
+                                              symbol=symbol, detail={"elapsed_min": round(elapsed, 1)})
+                                    await close_symbol(exchange, cfg, symbol, reason="TIME_STOP")
+                                    continue
+                            except Exception as e:
+                                logger.error(f"時間停損計算失敗 {symbol}: {e}")
+
                     await check_and_place_hidden_grids(exchange, cfg, symbol)
                     await check_position_protection(exchange, cfg, symbol)
                     # 黑K偵測加碼（持倉幣才需要，不限候選池）
@@ -1215,6 +1305,28 @@ async def trading_loop():
                         if target:
                             state["black_k_targets"][symbol] = target
                             update_hidden_grids(symbol, target, cfg)
+                    # 第二段止盈追蹤保底：價格反彈回第一段目標價 → 取消第二段，改市價全出
+                    guard_price = state["tp_tier2_guard"].get(symbol)
+                    if guard_price and symbol in state["tp_tier1_done"]:
+                        current_price = get_cached_price(symbol)
+                        if current_price and current_price >= guard_price:
+                            tp2_order_id = state["tp_sl_orders"].get(symbol, {}).get("tp2_limit")
+                            if tp2_order_id:
+                                try:
+                                    await exchange.cancel_order(symbol, tp2_order_id)
+                                except Exception:
+                                    pass
+                            # 市價平倉剩餘部位
+                            pos_now = state["_binance_positions_cache"].get(symbol, {})
+                            remain_qty = pos_now.get("qty", 0)
+                            if remain_qty > 0:
+                                filters = state["symbol_filters_cache"].get(symbol, {})
+                                remain_qty = align_qty(remain_qty, filters.get("step_size", 0.001))
+                                await exchange.place_market_order(symbol, "BUY", remain_qty, reduce_only=True)
+                                write_log("TP_TIER", f"第二段追蹤保底觸發，市價平剩餘 qty={remain_qty} @ {current_price}",
+                                          symbol=symbol, detail={"guard_price": guard_price,
+                                                                  "current_price": current_price})
+                            state["tp_tier2_guard"].pop(symbol, None)
                 except Exception as e:
                     logger.error(f"監控失敗 {symbol}: {e}")
 

@@ -203,17 +203,20 @@ async def run_scan():
     pre_scan_size = cfg.get("pre_scan_size", 30)
     pool_size = cfg.get("candidate_pool_size", 10)
 
-    # 步驟1：距離15分K上軌過濾，取前 pre_scan_size 個
+    # 步驟1：距離15分K上軌硬性過濾，取前 pre_scan_size 個
     filtered = [r for r in results if r.get("dist_to_upper_pct", 999) <= max_dist]
     top_15m = filtered[:pre_scan_size]
 
-    # 步驟2：硬性條件，前高最大超出幅度必須 >= prev_high_min_excess_pct（預設1.0%）
-    # prev_high_score ≈ max_excess + count_score*0.2，門檻近似直接對應幅度%
+    # 步驟2：距離1H上軌硬性過濾
+    max_dist_1h = cfg.get("max_dist_1h_upper_pct", 0.5)
+    top_15m = [r for r in top_15m if r.get("dist_1h_pct") is not None and r.get("dist_1h_pct", 999) <= max_dist_1h]
+
+    # 步驟3：硬性條件，前高最大超出幅度必須 >= prev_high_min_excess_pct（預設1.0%）
     min_excess = cfg.get("prev_high_min_excess_pct", 1.0)
     with_prev_high = [r for r in top_15m if r.get("prev_high_score", 0) >= min_excess]
     with_prev_high.sort(key=lambda x: x.get("prev_high_score", 0), reverse=True)
 
-    # 步驟3：在有前高的名單裡，按1H上軌距離由近到遠排序，取前 pool_size 個進候選池
+    # 步驟4：在有前高的名單裡，按1H上軌距離由近到遠排序，取前 pool_size 個進候選池
     with_prev_high.sort(key=lambda x: x.get("dist_1h_pct") if x.get("dist_1h_pct") is not None else 999)
     final_pool = with_prev_high[:pool_size]
 
@@ -302,6 +305,7 @@ def api_positions():
             "hidden_grids": state["hidden_grids"].get(sym, []),
             "tp_sl_orders": state["tp_sl_orders"].get(sym, {}),
             "sell_count": state["symbol_sell_count"].get(sym, 0),
+            "open_time": state["symbol_open_time"].get(sym),
         }
     return jsonify({"positions": result, "symbols": list(result.keys())})
 
@@ -391,7 +395,7 @@ def api_config_set():
     cfg = load_config()
     data = request.json
     allowed_keys = [
-        "capital_per_order_pct", "leverage", "grid_spacing_pct", "grid_count",
+        "capital_per_order_pct", "leverage", "grid_spacing_pct", "grid_count", "time_stop_minutes",
         "max_symbols", "max_orders_per_symbol", "scale_up_after_order", "scale_up_multiplier",
         "candidate_pool_size", "pre_scan_size",
         "take_profit_price_pct", "force_close_price_pct",
@@ -402,6 +406,10 @@ def api_config_set():
         "max_dist_to_upper_pct", "max_dist_1h_upper_pct",
         "min_band_width_pct", "prev_high_min_excess_pct",
         "volume_spike_multiplier", "single_candle_max_rise_pct",
+        "tp_tier1_roi", "tp_tier1_qty", "tp_tier2_roi",
+        "sl_tier1_loss_pct", "sl_tier1_close_pct",
+        "sl_tier2_loss_pct", "sl_tier2_close_pct",
+        "sl_tier3_loss_pct", "sl_tier3_close_pct",
         "black_k_min_body_pct", "black_k_require_below_upper",
         "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback",
         "extend_orders_max", "extend_loss_pct",
@@ -487,7 +495,19 @@ def api_pnl_summary():
 
 @app.route("/api/reports/history")
 def api_history():
-    return jsonify(get_trade_history(100))
+    rows = get_trade_history(100)
+    for r in rows:
+        try:
+            fmt = "%Y-%m-%d %H:%M:%S"
+            t_open = datetime.strptime(r["open_time"], fmt) if r.get("open_time") else None
+            t_close = datetime.strptime(r["close_time"], fmt) if r.get("close_time") else None
+            if t_open and t_close and t_close > t_open:
+                r["hold_minutes"] = round((t_close - t_open).total_seconds() / 60, 1)
+            else:
+                r["hold_minutes"] = None
+        except Exception:
+            r["hold_minutes"] = None
+    return jsonify(rows)
 
 
 @app.route("/api/reports/daily")

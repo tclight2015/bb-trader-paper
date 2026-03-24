@@ -155,6 +155,16 @@ class BinanceExchange(BaseExchange):
             return {item["symbol"]: float(item["price"]) for item in data if "symbol" in item}
         return {}
 
+    async def get_mark_price(self, symbol: str) -> float | None:
+        """取得標記價格"""
+        try:
+            data = await self._get("/fapi/v1/premiumIndex", {"symbol": symbol})
+            if data and "markPrice" in data:
+                return float(data["markPrice"])
+        except Exception:
+            pass
+        return None
+
     async def get_klines(self, symbol: str, interval: str = "1m", limit: int = 10) -> list:
         return await self._get("/fapi/v1/klines", {
             "symbol": symbol, "interval": interval, "limit": limit

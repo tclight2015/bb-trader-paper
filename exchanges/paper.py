@@ -146,6 +146,10 @@ class PaperExchange(BaseExchange):
             return dict(self._price_ref)
         return {}
 
+    async def get_mark_price(self, symbol: str) -> float | None:
+        """Paper mode 無真實標記價格，回傳 None"""
+        return None
+
     async def get_klines(self, symbol: str, interval: str = "1m", limit: int = 10) -> list:
         import aiohttp
         async with aiohttp.ClientSession() as s:
