@@ -306,6 +306,7 @@ def api_positions():
             "tp_sl_orders": state["tp_sl_orders"].get(sym, {}),
             "sell_count": state["symbol_sell_count"].get(sym, 0),
             "open_time": state["symbol_open_time"].get(sym),
+            "realized_pnl": state["symbol_realized_pnl"].get(sym, 0),
         }
     return jsonify({"positions": result, "symbols": list(result.keys())})
 

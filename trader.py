@@ -444,18 +444,10 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
             fully_closed = not pos_after or pos_after.get("qty", 0) <= 0
 
             if fully_closed:
-                # 完全平倉：走原有流程（記DB、清狀態）
+                # 完全平倉：記DB、清狀態
                 await handle_close_fill(exchange, cfg, symbol, fill_price, fill_qty)
             else:
-                # 部分平倉：每次都記一筆累積損益到DB
-                cached = state["_binance_positions_cache"].get(symbol, {})
-                avg_entry = state["symbol_avg_entry"].get(symbol) or cached.get("avg_entry") or fill_price
-                total_margin = state["symbol_total_margin"].get(symbol, 0) or cached.get("initial_margin", 0)
-                roe_pct = (total_pnl_now / total_margin * 100) if total_margin > 0 else 0
-                order_count = state["symbol_sell_count"].get(symbol, 1)
-                open_time = state["symbol_open_time"].get(symbol)
-
-                # 判斷平倉原因
+                # 部分平倉：判斷原因，更新狀態，不記DB（只在完全平倉時才記）
                 sl_order_ids = set(state["symbol_sl_orders"].get(symbol, {}).values())
                 tp1_order_id = state["tp_sl_orders"].get(symbol, {}).get("tp1_limit")
                 tp2_order_id = state["tp_sl_orders"].get(symbol, {}).get("tp2_limit")
@@ -463,29 +455,12 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
                     close_reason = "SL_TIER"
                 elif str(order_id) in [tp1_order_id, tp2_order_id]:
                     close_reason = "TP_WS"
-                elif fill_price < avg_entry:
+                elif fill_price < (state["symbol_avg_entry"].get(symbol) or fill_price):
                     close_reason = "TP_WS"
                 else:
                     close_reason = "SL_WS"
 
-                candidate_info = next((c for c in state["candidate_pool"] if c["symbol"] == symbol), {})
-                record_trade_close(
-                    symbol=symbol, avg_entry=avg_entry, close_price=fill_price,
-                    total_qty=fill_qty, total_margin=total_margin, total_pnl=total_pnl_now,
-                    roe_pct=roe_pct, close_reason=close_reason,
-                    exchange=exchange.name, order_count=order_count, open_time=open_time,
-                    market_snapshot=candidate_info
-                )
-                analytics_id = add_trade_analytics(
-                    symbol=symbol, avg_entry=avg_entry, close_price=fill_price,
-                    total_qty=fill_qty, total_margin=total_margin, total_pnl=total_pnl_now,
-                    roe_pct=roe_pct, close_reason=close_reason,
-                    market_snapshot=candidate_info, exchange=exchange.name,
-                    open_time=open_time
-                )
-                if analytics_id:
-                    asyncio.create_task(ml_fill_task(exchange, analytics_id, symbol))
-                write_log("CLOSE", f"部分平倉 累積PnL={total_pnl_now:.4f} ROE={roe_pct:.2f}%",
+                write_log("CLOSE", f"部分平倉({close_reason}) 累積PnL={total_pnl_now:.4f}",
                           symbol=symbol, detail={"close_price": fill_price, "qty": fill_qty,
                                                   "total_pnl": round(total_pnl_now, 4),
                                                   "close_reason": close_reason})
@@ -498,9 +473,7 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
                 # 重掛止盈
                 await asyncio.sleep(0.5)
                 await place_tp_sl(exchange, cfg, symbol)
-                # 停損單成交後不重掛停損（避免循環）；只在虧損回落時由 check_position_protection 重掛
                 if close_reason == "SL_TIER":
-                    # 標記此幣曾有停損成交，之後虧損回落才需要重掛
                     state["symbol_sl_triggered"].add(symbol)
                 else:
                     await place_sl_tiers(exchange, cfg, symbol)
