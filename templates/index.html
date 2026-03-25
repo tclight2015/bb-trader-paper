@@ -771,6 +771,27 @@ select.filter-select {
     </div>
   </div>
 
+  <!-- Daily Summary -->
+  <div class="card section">
+    <div class="card-header"><div class="card-title">每日績效</div></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>日期</th>
+            <th>交易次數</th>
+            <th>勝出</th>
+            <th>勝率</th>
+            <th>損益(USDT)</th>
+          </tr>
+        </thead>
+        <tbody id="dailyBody">
+          <tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text3)">無紀錄</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- Trade History -->
   <div class="card section">
     <div class="card-header"><div class="card-title">歷史交易紀錄</div></div>
@@ -793,27 +814,6 @@ select.filter-select {
         </thead>
         <tbody id="historyBody">
           <tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text3)">無紀錄</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Daily Summary -->
-  <div class="card section">
-    <div class="card-header"><div class="card-title">每日績效</div></div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>日期</th>
-            <th>交易次數</th>
-            <th>勝出</th>
-            <th>勝率</th>
-            <th>損益(USDT)</th>
-          </tr>
-        </thead>
-        <tbody id="dailyBody">
-          <tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text3)">無紀錄</td></tr>
         </tbody>
       </table>
     </div>
@@ -1405,6 +1405,9 @@ const CONFIG_LABELS = {
   max_dist_to_upper_pct:         ["15分K距上軌上限%", "距15分K上軌超過此%踢出候選池"],
   max_dist_1h_upper_pct:         ["1H距上軌上限%", "距1H上軌超過此%踢出候選池"],
   prev_high_min_excess_pct:      ["前高保護最小超出幅度%", "前5根K棒中至少一根高點須超過現價X%才進候選池"],
+  black_k_require_below_upper:   ["黑K高點須低於上軌", "勾選=啟用，斜率過陡時高點在上軌上方才攔"],
+  black_k_max_upper_slope_pct:   ["上軌最大斜率%/根", "每根1分K上軌漲幅超過此值=動能太強，封鎖黑K"],
+  black_k_upper_slope_lookback:  ["斜率計算回看根數", ""],
   sl_tier1_loss_pct:             ["第一階停損門檻（本金虧%）", "本金虧損達此%掛出第一階停損單"],
   sl_tier1_close_pct:            ["第一階停損平倉%", "第一階觸發時平倉X%倉位"],
   sl_tier2_loss_pct:             ["第二階停損門檻（本金虧%）", "本金虧損達此%掛出第二階停損單"],
@@ -1420,6 +1423,8 @@ const CONFIG_SECTIONS = [
     keys: ["min_volume_usdt", "max_dist_to_upper_pct", "max_dist_1h_upper_pct", "prev_high_min_excess_pct"] },
   { label: "止盈設定", color: "red", icon: "🛡",
     keys: ["tp_tier1_roi", "tp_tier1_qty", "tp_tier2_roi", "pause_open_rise_pct"] },
+  { label: "黑K濾網", color: "gray", icon: "🖤",
+    keys: ["black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback"] },
   { label: "分階停損", color: "darkred", icon: "🔴",
     keys: ["sl_tier1_loss_pct", "sl_tier1_close_pct", "sl_tier2_loss_pct", "sl_tier2_close_pct", "sl_tier3_loss_pct", "sl_tier3_close_pct"] },
   { label: "保護機制", color: "orange", icon: "⚠️",
@@ -1430,7 +1435,7 @@ const CONFIG_SECTIONS = [
     keys: ["max_symbols", "max_orders_per_symbol", "extend_orders_max", "extend_loss_pct", "scale_up_after_order", "scale_up_multiplier", "candidate_pool_size", "pre_scan_size", "candidate_pool_refresh_min"] },
 ];
 
-const BOOL_KEYS = new Set([]);
+const BOOL_KEYS = new Set(["black_k_require_below_upper"]);
 
 function renderSettings() {
   const grid = document.getElementById("configGrid");
@@ -1669,6 +1674,10 @@ startAutoRefresh();
       <option value="GRID_PLACE">GRID_PLACE 網格掛出</option>
       <option value="TP_SL_ORDER">TP_SL_ORDER 止盈止損更新</option>
       <option value="CLOSE">CLOSE 平倉完成</option>
+      <option value="SL_TIER">SL_TIER 分階停損</option>
+      <option value="TP_TIER">TP_TIER 分段止盈</option>
+      <option value="TIME_STOP">TIME_STOP 時間停損</option>
+      <option value="SLIPPAGE">SLIPPAGE 滑點偵測</option>
       <option value="PAUSE_OPEN">PAUSE_OPEN 暫停加碼</option>
       <option value="RESUME_OPEN">RESUME_OPEN 恢復加碼</option>
       <option value="BLOCKED">BLOCKED 持倉已滿/加碼上限</option>
@@ -1685,6 +1694,7 @@ startAutoRefresh();
     <input class="filter-input" id="logSymbolFilter" type="text" placeholder="BTC, ETH..." style="width:100px">
     <button class="btn btn-ghost btn-sm" onclick="loadLogs()">篩選</button>
     <button class="btn btn-primary btn-sm" onclick="exportLogs()">📥 下載日誌(JSON)</button>
+    <a class="btn btn-ghost btn-sm" href="/api/download/db" download>💾 下載資料庫(DB)</a>
   </div>
 
   <div class="card">

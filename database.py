@@ -45,7 +45,12 @@ def init_db():
             close_reason TEXT,
             order_count INTEGER DEFAULT 1,
             mark_price REAL,
-            slippage_pct REAL
+            slippage_pct REAL,
+            upper_15m REAL,
+            dist_15m_pct REAL,
+            dist_1h_pct REAL,
+            prev_high_score REAL,
+            volume_usdt REAL
         )
     """)
 
@@ -69,10 +74,12 @@ def init_db():
             band_width_pct REAL,
             volume_usdt REAL,
             prev_high_score REAL,
+            price_15m_after REAL,
+            price_30m_after REAL,
             price_1h_after REAL,
-            price_4h_after REAL,
+            filled_15m INTEGER DEFAULT 0,
+            filled_30m INTEGER DEFAULT 0,
             filled_1h INTEGER DEFAULT 0,
-            filled_4h INTEGER DEFAULT 0,
             reward_score REAL,
             extra_data TEXT
         )
@@ -112,10 +119,18 @@ def _migrate(c):
         ("trade_history",   "order_count",  "INTEGER DEFAULT 1"),
         ("trade_history",   "mark_price",   "REAL"),
         ("trade_history",   "slippage_pct", "REAL"),
+        ("trade_history",   "upper_15m",    "REAL"),
+        ("trade_history",   "dist_15m_pct", "REAL"),
+        ("trade_history",   "dist_1h_pct",  "REAL"),
+        ("trade_history",   "prev_high_score", "REAL"),
+        ("trade_history",   "volume_usdt",  "REAL"),
         ("trade_analytics", "exchange",     "TEXT DEFAULT 'binance'"),
         ("trade_analytics", "hold_minutes", "REAL"),
-        ("trade_analytics", "filled_1h",    "INTEGER DEFAULT 0"),
-        ("trade_analytics", "filled_4h",    "INTEGER DEFAULT 0"),
+        ("trade_analytics", "price_15m_after", "REAL"),
+        ("trade_analytics", "price_30m_after", "REAL"),
+        ("trade_analytics", "filled_15m",  "INTEGER DEFAULT 0"),
+        ("trade_analytics", "filled_30m",  "INTEGER DEFAULT 0"),
+        ("trade_analytics", "filled_1h",   "INTEGER DEFAULT 0"),
         ("trade_analytics", "reward_score", "REAL"),
         ("system_log",      "exchange",     "TEXT DEFAULT 'binance'"),
     ]
@@ -131,19 +146,24 @@ def _migrate(c):
 def record_trade_close(symbol, avg_entry, close_price, total_qty,
                        total_margin, total_pnl, roe_pct, close_reason,
                        open_time=None, exchange="binance", order_count=1,
-                       mark_price=None, slippage_pct=None):
+                       mark_price=None, slippage_pct=None, market_snapshot=None):
     conn = get_conn()
     now = datetime.now(TZ_TAIPEI).strftime("%Y-%m-%d %H:%M:%S")
+    snap = market_snapshot or {}
     conn.execute("""
         INSERT INTO trade_history
         (symbol, exchange, open_time, close_time, avg_entry_price, close_price,
          total_quantity, total_margin, total_pnl, roe_pct, close_reason, order_count,
-         mark_price, slippage_pct)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         mark_price, slippage_pct, upper_15m, dist_15m_pct, dist_1h_pct,
+         prev_high_score, volume_usdt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (symbol, exchange, open_time or now, now,
           avg_entry, close_price, total_qty,
           total_margin, total_pnl, roe_pct, close_reason, order_count,
-          mark_price, slippage_pct))
+          mark_price, slippage_pct,
+          snap.get("upper_15m"), snap.get("dist_15m_pct", snap.get("dist_15m")),
+          snap.get("dist_1h_pct", snap.get("dist_1h")),
+          snap.get("prev_high_score"), snap.get("volume_usdt")))
     conn.commit()
     conn.close()
 
@@ -190,16 +210,21 @@ def add_trade_analytics(symbol, avg_entry, close_price, total_qty,
 
 # ===== ML 補填 =====
 
-def fill_price_after(analytics_id: int, hours: int, price: float):
+def fill_price_after(analytics_id: int, minutes: int, price: float):
     conn = get_conn()
-    if hours == 1:
+    if minutes == 15:
         conn.execute(
-            "UPDATE trade_analytics SET price_1h_after=?, filled_1h=1 WHERE id=?",
+            "UPDATE trade_analytics SET price_15m_after=?, filled_15m=1 WHERE id=?",
             (price, analytics_id)
         )
-    elif hours == 4:
+    elif minutes == 30:
         conn.execute(
-            "UPDATE trade_analytics SET price_4h_after=?, filled_4h=1 WHERE id=?",
+            "UPDATE trade_analytics SET price_30m_after=?, filled_30m=1 WHERE id=?",
+            (price, analytics_id)
+        )
+    elif minutes == 60:
+        conn.execute(
+            "UPDATE trade_analytics SET price_1h_after=?, filled_1h=1 WHERE id=?",
             (price, analytics_id)
         )
     conn.commit()
@@ -207,7 +232,7 @@ def fill_price_after(analytics_id: int, hours: int, price: float):
     row = conn.execute(
         "SELECT * FROM trade_analytics WHERE id=?", (analytics_id,)
     ).fetchone()
-    if row and row["filled_1h"] and row["filled_4h"]:
+    if row and row["filled_1h"]:
         score = _calc_reward(dict(row))
         conn.execute(
             "UPDATE trade_analytics SET reward_score=? WHERE id=?",
@@ -242,15 +267,15 @@ def _calc_reward(row: dict) -> float:
 
 
 async def ml_fill_task(exchange_client, analytics_id: int, symbol: str):
-    for hours in [1, 4]:
-        await asyncio.sleep(hours * 3600)
+    for minutes in [15, 30, 60]:
+        await asyncio.sleep(minutes * 60)
         try:
             price = await exchange_client.get_price(symbol)
             if price:
-                fill_price_after(analytics_id, hours, price)
-                logger.info(f"ML補填 {symbol} {hours}h @ {price} (id={analytics_id})")
+                fill_price_after(analytics_id, minutes, price)
+                logger.info(f"ML補填 {symbol} {minutes}m @ {price} (id={analytics_id})")
         except Exception as e:
-            logger.error(f"ML補填失敗 {symbol} {hours}h: {e}")
+            logger.error(f"ML補填失敗 {symbol} {minutes}m: {e}")
 
 
 # ===== 查詢 =====
@@ -258,7 +283,9 @@ async def ml_fill_task(exchange_client, analytics_id: int, symbol: str):
 def get_trade_history(limit=100):
     conn = get_conn()
     rows = conn.execute(
-        "SELECT * FROM trade_history ORDER BY close_time DESC LIMIT ?", (limit,)
+        """SELECT * FROM trade_history
+           WHERE close_time >= datetime('now', '-3 days', 'localtime')
+           ORDER BY close_time DESC LIMIT ?""", (limit,)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -295,7 +322,7 @@ def get_cumulative_pnl():
 
 def get_analytics(limit=200, unfilled_only=False):
     conn = get_conn()
-    where = "WHERE filled_1h=0 OR filled_4h=0" if unfilled_only else ""
+    where = "WHERE filled_15m=0 OR filled_30m=0 OR filled_1h=0" if unfilled_only else ""
     rows = conn.execute(
         f"SELECT * FROM trade_analytics {where} ORDER BY close_time DESC LIMIT ?",
         (limit,)

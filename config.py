@@ -27,6 +27,11 @@ DEFAULT_CONFIG = {
     "candidate_pool_size": 10,          # 候選監控池大小
     "pre_scan_size": 20,               # 從15分K取前N個再篩候選池
 
+    # === 黑K濾網 ===
+    "black_k_require_below_upper": True, # 斜率過陡時高點須低於上軌才觸發
+    "black_k_max_upper_slope_pct": 0.03, # 上軌每根K最大漲幅%
+    "black_k_upper_slope_lookback": 5,   # 斜率計算回看根數
+
     # === 分段止盈（基於本金獲利率%）===
     "tp_tier1_roi": 30.0,              # 第一段止盈：本金獲利達X%
     "tp_tier1_qty": 50.0,              # 第一段止盈：平倉X%倉位

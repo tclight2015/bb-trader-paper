@@ -410,7 +410,7 @@ def api_config_set():
         "sl_tier1_loss_pct", "sl_tier1_close_pct",
         "sl_tier2_loss_pct", "sl_tier2_close_pct",
         "sl_tier3_loss_pct", "sl_tier3_close_pct",
-        "black_k_min_body_pct", "black_k_require_below_upper",
+        "black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback",
         "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback",
         "extend_orders_max", "extend_loss_pct",
         "system_running"
@@ -491,6 +491,19 @@ def api_pnl_summary():
     }
     conn.close()
     return jsonify(result)
+
+
+@app.route("/api/download/db")
+def api_download_db():
+    """下載完整 SQLite 資料庫"""
+    import os
+    db_path = os.environ.get("DB_PATH", "trading.db")
+    if not os.path.exists(db_path):
+        return jsonify({"error": "DB not found"}), 404
+    from flask import send_file
+    return send_file(db_path, as_attachment=True,
+                     download_name="bb_grid_trading.db",
+                     mimetype="application/octet-stream")
 
 
 @app.route("/api/reports/history")
