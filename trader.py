@@ -51,8 +51,7 @@ state = {
     "closing_symbols": set(),   # 正在由 close_symbol 處理平倉的幣種（防止 handle_close_fill 重複寫DB）
     "black_k_targets": {},      # symbol -> target_price（黑K目標掛單價）
     "black_k_last_k_time": {},  # symbol -> k_open_time（防同一根K棒重複觸發）
-    "symbol_sl_orders": {},     # symbol -> {1: order_id, 2: order_id, 3: order_id} 三階停損掛單
-    "symbol_sl_triggered": set(), # 曾有停損單成交過的幣種（用於判斷是否需要回落重掛）
+    "symbol_sl_order": {},      # symbol -> order_id（單一止損限價單）
     "symbol_open_time": {},     # symbol -> 第一筆開倉時間（ISO string）
     "tp_tier1_done": set(),      # 第一段止盈已成交的幣種
     "tp_tier2_guard": {},        # symbol -> 第二段追蹤保底價（=第一段目標價）
@@ -66,6 +65,7 @@ state = {
     "_binance_positions_cache": {},
 
     "triggered_symbols": set(),
+    "symbol_last_close_time": {},  # symbol -> 上次平倉時間戳（用於冷卻期）
     "symbol_open_paused": set(),   # 因價格上漲暫停加碼的幣種（可自動恢復）
     "ws_price_connected": False,
     "ws_user_connected": False,
@@ -431,7 +431,7 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
             update_hidden_grids(symbol, fill_price, cfg)
             await asyncio.sleep(0.5)
             await place_tp_sl(exchange, cfg, symbol)
-            await place_sl_tiers(exchange, cfg, symbol)
+            await place_sl(exchange, cfg, symbol)
 
         elif side == "BUY" and status == "FILLED" and realized_pnl != 0:
             # 累積已實現損益
@@ -448,11 +448,11 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
                 await handle_close_fill(exchange, cfg, symbol, fill_price, fill_qty)
             else:
                 # 部分平倉：判斷原因，更新狀態，不記DB（只在完全平倉時才記）
-                sl_order_ids = set(state["symbol_sl_orders"].get(symbol, {}).values())
+                sl_order_id = state["symbol_sl_order"].get(symbol)
                 tp1_order_id = state["tp_sl_orders"].get(symbol, {}).get("tp1_limit")
                 tp2_order_id = state["tp_sl_orders"].get(symbol, {}).get("tp2_limit")
-                if str(order_id) in sl_order_ids:
-                    close_reason = "SL_TIER"
+                if sl_order_id and str(order_id) == sl_order_id:
+                    close_reason = "SL_WS"
                 elif str(order_id) in [tp1_order_id, tp2_order_id]:
                     close_reason = "TP_WS"
                 elif fill_price < (state["symbol_avg_entry"].get(symbol) or fill_price):
@@ -470,13 +470,10 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
                     state["tp_tier1_done"].add(symbol)
                     write_log("TP_TIER", f"第一段止盈成交 @ {fill_price}，重掛第二段", symbol=symbol)
 
-                # 重掛止盈
+                # 重掛止盈止損
                 await asyncio.sleep(0.5)
                 await place_tp_sl(exchange, cfg, symbol)
-                if close_reason == "SL_TIER":
-                    state["symbol_sl_triggered"].add(symbol)
-                else:
-                    await place_sl_tiers(exchange, cfg, symbol)
+                await place_sl(exchange, cfg, symbol)
 
 
 async def handle_close_fill(exchange: BaseExchange, cfg: dict, symbol: str,
@@ -765,11 +762,16 @@ async def place_tp_sl(exchange: BaseExchange, cfg: dict, symbol: str):
             else:
                 write_log("ERROR", f"第一段止盈掛單失敗", symbol=symbol, detail={"resp": r})
 
-    # 第二段：剩餘全部（用總量減去第一段對齊後的數量，確保無殘留）
+    # 第二段：用持倉快取的實際數量，確保不留尾巴
+    pos_now = state["_binance_positions_cache"].get(symbol, {})
+    actual_qty = pos_now.get("qty", total_qty)
     if tier1_done:
-        t2_qty = align_qty(total_qty, filters["step_size"])
+        t2_qty = align_qty(actual_qty, filters["step_size"])
     else:
-        t2_qty = align_qty(total_qty - t1_qty, filters["step_size"])
+        # 第一段還沒成交時，用總量減去第一段數量
+        t2_qty = align_qty(actual_qty - t1_qty, filters["step_size"])
+        if t2_qty <= 0:
+            t2_qty = align_qty(actual_qty * (1 - tp1_qty_pct / 100), filters["step_size"])
     if t2_qty > 0:
         r = await exchange.place_limit_order(symbol, "BUY", t2_qty, tp2_price, reduce_only=True)
         if r and "orderId" in r:
@@ -787,8 +789,8 @@ async def place_tp_sl(exchange: BaseExchange, cfg: dict, symbol: str):
                                      "tp2_price": tp2_price, "orders": new_orders})
 
 
-async def place_sl_tiers(exchange: BaseExchange, cfg: dict, symbol: str):
-    """預掛三階停損單，每次開倉/加碼/回落重置時呼叫"""
+async def place_sl(exchange: BaseExchange, cfg: dict, symbol: str):
+    """掛單一止損限價單，每次開倉/加碼後重置"""
     pos = state["_binance_positions_cache"].get(symbol, {})
     total_qty = pos.get("qty", 0)
     avg_entry = state["symbol_avg_entry"].get(symbol) or pos.get("avg_entry", 0)
@@ -797,53 +799,37 @@ async def place_sl_tiers(exchange: BaseExchange, cfg: dict, symbol: str):
         return
 
     leverage = cfg.get("leverage", 30)
-    tiers = [
-        (cfg.get("sl_tier1_loss_pct", 60),  cfg.get("sl_tier1_close_pct", 33),  1),
-        (cfg.get("sl_tier2_loss_pct", 75),  cfg.get("sl_tier2_close_pct", 33),  2),
-        (cfg.get("sl_tier3_loss_pct", 90),  cfg.get("sl_tier3_close_pct", 34),  3),
-    ]
+    sl_loss_pct = cfg.get("sl_loss_pct", 40.0)
+
+    # 停損價 = 均入價 × (1 + sl_loss_pct / leverage / 100)
+    sl_price_raw = avg_entry * (1 + sl_loss_pct / leverage / 100)
 
     filters = await get_filters_cached(exchange, symbol)
     if not filters:
         return
 
-    # 取消現有停損掛單
-    old_sl_orders = state["symbol_sl_orders"].get(symbol, {})
-    for tier_idx, oid in old_sl_orders.items():
+    sl_price = align_price(sl_price_raw, filters["tick_size"])
+    close_qty = align_qty(total_qty, filters["step_size"])
+    if close_qty <= 0:
+        return
+
+    # 取消舊止損單
+    old_oid = state["symbol_sl_order"].get(symbol)
+    if old_oid:
         try:
-            await exchange.cancel_order(symbol, oid)
+            await exchange.cancel_order(symbol, old_oid)
         except Exception:
             pass
-    state["symbol_sl_orders"][symbol] = {}
+        state["symbol_sl_order"].pop(symbol, None)
 
-    new_sl_orders = {}
-    remaining_qty = total_qty  # 追蹤剩餘數量，確保最後一階清光
-    for i, (loss_threshold, close_pct, tier_idx) in enumerate(tiers):
-        # 停損價 = 均入價 × (1 + loss_threshold/leverage/100)
-        sl_price_raw = avg_entry * (1 + loss_threshold / leverage / 100)
-        sl_price = align_price(sl_price_raw, filters["tick_size"])
-
-        is_last_tier = (i == len(tiers) - 1)
-        if is_last_tier:
-            # 最後一階：平倉全部剩餘，確保沒有殘留
-            close_qty = align_qty(remaining_qty, filters["step_size"])
-        else:
-            close_qty = align_qty(total_qty * close_pct / 100, filters["step_size"])
-            remaining_qty -= close_qty
-
-        if close_qty <= 0:
-            continue
-
-        r = await exchange.place_limit_order(symbol, "BUY", close_qty, sl_price, reduce_only=True)
-        if r and "orderId" in r:
-            new_sl_orders[tier_idx] = str(r["orderId"])
-            logger.info(f"🔴 第{tier_idx}階停損掛出 {symbol} @ {sl_price} qty={close_qty} (虧損{loss_threshold}%本金)")
-        else:
-            write_log("ERROR", f"第{tier_idx}階停損掛單失敗", symbol=symbol, detail={"resp": r})
-
-    state["symbol_sl_orders"][symbol] = new_sl_orders
-    write_log("SL_TIER", f"停損單重掛完成，共{len(new_sl_orders)}張",
-              symbol=symbol, detail={"orders": new_sl_orders, "avg_entry": avg_entry})
+    r = await exchange.place_limit_order(symbol, "BUY", close_qty, sl_price, reduce_only=True)
+    if r and "orderId" in r:
+        state["symbol_sl_order"][symbol] = str(r["orderId"])
+        logger.info(f"🔴 止損掛出 {symbol} @ {sl_price} qty={close_qty} (虧損{sl_loss_pct}%本金)")
+        write_log("SL_ORDER", f"止損單掛出 @ {sl_price} (虧損{sl_loss_pct}%本金)",
+                  symbol=symbol, detail={"sl_price": sl_price, "qty": close_qty, "avg_entry": avg_entry})
+    else:
+        write_log("ERROR", f"止損掛單失敗", symbol=symbol, detail={"resp": r})
 
 
 # ===== 開倉 =====
@@ -856,6 +842,7 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
     # 該幣種因漲幅超限暫停加碼
     if symbol in state["symbol_open_paused"]:
         return False
+
 
     open_syms = set(state["_binance_positions_cache"].keys())
     # 加上 pending_open：已掛單但尚未成交的幣種也計入持倉數
@@ -1029,6 +1016,7 @@ def _clear_symbol_state(symbol: str):
     state["triggered_symbols"].discard(symbol)
     state["symbol_open_paused"].discard(symbol)
     state["pending_open"].discard(symbol)
+    state["symbol_last_close_time"][symbol] = time.time()  # 記錄平倉時間供冷卻期使用
     state["symbol_sell_count"].pop(symbol, None)
     state["symbol_total_margin"].pop(symbol, None)
     state["symbol_avg_entry"].pop(symbol, None)
@@ -1036,8 +1024,7 @@ def _clear_symbol_state(symbol: str):
     state["closing_symbols"].discard(symbol)
     state["black_k_targets"].pop(symbol, None)
     state["black_k_last_k_time"].pop(symbol, None)
-    state["symbol_sl_orders"].pop(symbol, None)
-    state["symbol_sl_triggered"].discard(symbol)
+    state["symbol_sl_order"].pop(symbol, None)
     state["symbol_open_time"].pop(symbol, None)
     state["tp_tier1_done"].discard(symbol)
     state["tp_tier2_guard"].pop(symbol, None)
@@ -1134,25 +1121,7 @@ async def check_position_protection(exchange: BaseExchange, cfg: dict, symbol: s
                                              "current_price": current_price,
                                              "rise_pct": round(rise_pct, 3)})
 
-    # === 層2：停損回落重置監測 ===
-    total_qty = cached_pos["qty"]
-    total_margin = state["symbol_total_margin"].get(symbol, 0) or cached_pos.get("initial_margin", 0)
-    if total_margin <= 0:
-        return
 
-    unrealized_pnl = (avg_entry - current_price) * total_qty
-    roe_pct = unrealized_pnl / total_margin * 100
-    capital_loss_pct = -(roe_pct / cfg.get("leverage", 30))  # 正數=虧損%
-
-    tier1_threshold = cfg.get("sl_tier1_loss_pct", 60)
-
-    # 曾有停損成交，且虧損回落到第一階門檻以下 → 重算重掛
-    if (symbol in state["symbol_sl_triggered"]
-            and capital_loss_pct < tier1_threshold):
-        write_log("SL_TIER", f"虧損回落至{capital_loss_pct:.1f}%（門檻{tier1_threshold}%），重掛停損單",
-                  symbol=symbol, detail={"capital_loss_pct": round(capital_loss_pct, 2)})
-        state["symbol_sl_triggered"].discard(symbol)  # 清除 flag，避免重複觸發
-        await place_sl_tiers(exchange, cfg, symbol)
 
 
 # ===== 候選池 =====
@@ -1205,8 +1174,7 @@ async def reset_system(exchange: BaseExchange, cfg: dict) -> dict:
     state["closing_symbols"].discard(symbol)
     state["black_k_targets"].pop(symbol, None)
     state["black_k_last_k_time"].pop(symbol, None)
-    state["symbol_sl_orders"].pop(symbol, None)
-    state["symbol_sl_triggered"].discard(symbol)
+    state["symbol_sl_order"].pop(symbol, None)
     state["symbol_open_time"].pop(symbol, None)
     state["tp_tier1_done"].discard(symbol)
     state["tp_tier2_guard"].pop(symbol, None)
@@ -1215,6 +1183,7 @@ async def reset_system(exchange: BaseExchange, cfg: dict) -> dict:
 
     for symbol in all_positions.keys():
         await place_tp_sl(exchange, cfg, symbol)
+        await place_sl(exchange, cfg, symbol)
 
     write_log("RESET", f"Reset完成，持倉幣種: {list(all_positions.keys())}")
     return {"status": "ok", "open_symbols": list(all_positions.keys())}
@@ -1331,6 +1300,20 @@ async def trading_loop():
 
                     await check_and_place_hidden_grids(exchange, cfg, symbol)
                     await check_position_protection(exchange, cfg, symbol)
+
+                    # 精度殘留檢查：持倉數量極小（不足一個 step_size）→ 強制市價清除
+                    pos_now = state["_binance_positions_cache"].get(symbol, {})
+                    remain_qty = pos_now.get("qty", 0)
+                    if remain_qty > 0:
+                        filters_now = state["symbol_filters_cache"].get(symbol, {})
+                        step = filters_now.get("step_size", 0.001)
+                        if remain_qty < step:
+                            write_log("WARN", f"精度殘留 qty={remain_qty} < step={step}，強制市價清除",
+                                      symbol=symbol)
+                            try:
+                                await exchange.place_market_order(symbol, "BUY", remain_qty, reduce_only=True)
+                            except Exception as e:
+                                logger.error(f"清除精度殘留失敗 {symbol}: {e}")
 
                     # 黑K偵測加碼（持倉幣才需要，不限候選池）
                     if symbol not in state["black_k_targets"]:

@@ -1,7 +1,10 @@
 import json
 import os
 
-CONFIG_FILE = "trading_config.json"
+# Railway Volume 掛載在 /data，部署不會覆蓋；本地開發 fallback 到當前目錄
+_VOLUME_PATH = "/data/trading_config.json"
+_LOCAL_PATH = "trading_config.json"
+CONFIG_FILE = _VOLUME_PATH if os.path.isdir("/data") else _LOCAL_PATH
 
 DEFAULT_CONFIG = {
     # === 帳戶設定（從環境變數讀取）===
@@ -11,7 +14,8 @@ DEFAULT_CONFIG = {
 
     # === 開單設定 ===
     "capital_per_order_pct": 1.0,
-    "time_stop_minutes": 0,            # 時間停損：第一槍後X分鐘市價出清（0=停用）
+    "time_stop_minutes": 100,
+    "reopen_cooldown_minutes": 10,     # 平倉後冷卻期（分鐘），期間不重複開同一幣            # 時間停損：第一槍後X分鐘市價出清（0=停用）
     "leverage": 30,                     # 槓桿倍數
     # notional = 帳戶餘額 * capital_per_order_pct% * leverage
 
@@ -25,7 +29,7 @@ DEFAULT_CONFIG = {
     "scale_up_after_order": 10,         # 第幾筆成交後開始放大每單保證金
     "scale_up_multiplier": 1.0,         # 放大倍數（1.0=停用）
     "candidate_pool_size": 10,          # 候選監控池大小
-    "pre_scan_size": 20,               # 從15分K取前N個再篩候選池
+    "pre_scan_size": 50,               # 從15分K取前N個再篩候選池
 
     # === 黑K濾網 ===
     "black_k_require_below_upper": True, # 斜率過陡時高點須低於上軌才觸發
@@ -41,28 +45,26 @@ DEFAULT_CONFIG = {
     "pause_open_rise_pct": 999.0,      # 暫停對該幣加碼：現價比均入價上漲X%（可恢復）
 
     # === 分階停損（基於本金虧損率%）===
-    "sl_tier1_loss_pct": 60.0,         # 第一階停損：本金虧損達X%
-    "sl_tier1_close_pct": 33.0,        # 第一階停損：平倉X%倉位
-    "sl_tier2_loss_pct": 75.0,         # 第二階停損：本金虧損達X%
-    "sl_tier2_close_pct": 33.0,        # 第二階停損：平倉X%倉位
-    "sl_tier3_loss_pct": 90.0,         # 第三階停損：本金虧損達X%
-    "sl_tier3_close_pct": 34.0,        # 第三階停損：平倉X%倉位（剩餘全部）
+    "sl_loss_pct": 40.0,               # 停損：本金虧損達X%，掛限價單全部平倉
 
     # === 保證金水位保護 ===
     "margin_usage_limit_pct": 75.0,    # 全帳戶保證金使用率上限%
 
     # === 掃描篩選條件 ===
-    "min_volume_usdt": 5_000_000,      # 最低24H成交量（USDT），0=無限制
+    "min_volume_usdt": 0,      # 最低24H成交量（USDT），0=無限制
     "max_dist_to_upper_pct": 0.3,      # 距15分K上軌最大距離%（硬性條件）
     "max_dist_1h_upper_pct": 0.5,      # 距1H上軌最大距離%（硬性條件）
     "prev_high_min_excess_pct": 1.0,   # 前高保護：前5根中至少一根高點須超過現價X%
+
+    # === 黑名單 ===
+    "blacklist": ["DYDX", "DOGS"],     # 排除不進候選池的幣種（不含USDT）
 
     # === 異常偵測 ===
 
     # === 黑K濾網 ===
 
     # === 加碼放寬 ===
-    "extend_orders_max": 25,           # 虧損未達門檻時，可放寬加碼到幾筆
+    "extend_orders_max": 20,           # 虧損未達門檻時，可放寬加碼到幾筆
     "extend_loss_pct": 15.0,           # 本金虧損在此%以內才適用放寬（正數，例如15=虧15%內）
 
     # === 系統設定 ===

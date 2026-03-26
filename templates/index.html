@@ -1407,15 +1407,11 @@ const CONFIG_LABELS = {
   max_dist_to_upper_pct:         ["15分K距上軌上限%", "距15分K上軌超過此%踢出候選池"],
   max_dist_1h_upper_pct:         ["1H距上軌上限%", "距1H上軌超過此%踢出候選池"],
   prev_high_min_excess_pct:      ["前高保護最小超出幅度%", "前5根K棒中至少一根高點須超過現價X%才進候選池"],
+  blacklist:                      ["黑名單幣種", "排除不進候選池的幣種，逗號分隔（不含USDT，例如 DYDX,XYZ）"],
   black_k_require_below_upper:   ["黑K高點須低於上軌", "勾選=啟用，斜率過陡時高點在上軌上方才攔"],
   black_k_max_upper_slope_pct:   ["上軌最大斜率%/根", "每根1分K上軌漲幅超過此值=動能太強，封鎖黑K"],
   black_k_upper_slope_lookback:  ["斜率計算回看根數", ""],
-  sl_tier1_loss_pct:             ["第一階停損門檻（本金虧%）", "本金虧損達此%掛出第一階停損單"],
-  sl_tier1_close_pct:            ["第一階停損平倉%", "第一階觸發時平倉X%倉位"],
-  sl_tier2_loss_pct:             ["第二階停損門檻（本金虧%）", "本金虧損達此%掛出第二階停損單"],
-  sl_tier2_close_pct:            ["第二階停損平倉%", "第二階觸發時平倉X%倉位"],
-  sl_tier3_loss_pct:             ["第三階停損門檻（本金虧%）", "本金虧損達此%掛出第三階停損單"],
-  sl_tier3_close_pct:            ["第三階停損平倉%", "第三階觸發時平倉X%倉位（建議34，剩餘全出）"],
+  sl_loss_pct:                   ["停損門檻（本金虧%）", "本金虧損達此%掛出限價止損單，全部平倉"],
 };
 
 const CONFIG_SECTIONS = [
@@ -1427,14 +1423,16 @@ const CONFIG_SECTIONS = [
     keys: ["tp_tier1_roi", "tp_tier1_qty", "tp_tier2_roi", "pause_open_rise_pct"] },
   { label: "黑K濾網", color: "gray", icon: "🖤",
     keys: ["black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback"] },
-  { label: "分階停損", color: "darkred", icon: "🔴",
-    keys: ["sl_tier1_loss_pct", "sl_tier1_close_pct", "sl_tier2_loss_pct", "sl_tier2_close_pct", "sl_tier3_loss_pct", "sl_tier3_close_pct"] },
+  { label: "停損設定", color: "darkred", icon: "🔴",
+    keys: ["sl_loss_pct"] },
   { label: "保護機制", color: "orange", icon: "⚠️",
     keys: ["margin_usage_limit_pct"] },
   { label: "網格設定", color: "teal", icon: "📐",
     keys: ["grid_spacing_pct", "grid_count"] },
   { label: "持倉管理", color: "purple", icon: "📊",
     keys: ["max_symbols", "max_orders_per_symbol", "extend_orders_max", "extend_loss_pct", "scale_up_after_order", "scale_up_multiplier", "candidate_pool_size", "pre_scan_size", "candidate_pool_refresh_min"] },
+  { label: "黑名單", color: "black", icon: "🚫",
+    keys: ["blacklist"] },
 ];
 
 const BOOL_KEYS = new Set(["black_k_require_below_upper"]);
@@ -1458,6 +1456,13 @@ function renderSettings() {
             <input type="checkbox" id="cfg-${key}" ${checked}>
             <label for="cfg-${key}">${val ? "啟用" : "停用"}</label>
           </div>
+        </div>`;
+      } else if (Array.isArray(val) || key === "blacklist") {
+        const arrVal = Array.isArray(val) ? val.join(", ") : (val || "");
+        html += `<div class="config-row">
+          <div class="config-label">${label}</div>
+          ${hint ? `<div class="config-hint">${hint}</div>` : ""}
+          <input class="config-input" id="cfg-${key}" type="text" value="${arrVal}" placeholder="例如 DYDX, XYZ">
         </div>`;
       } else {
         html += `<div class="config-row">
@@ -1488,6 +1493,9 @@ async function saveConfig() {
       if (!el) continue;
       if (BOOL_KEYS.has(key)) {
         update[key] = el.checked;
+      } else if (key === "blacklist" || el.type === "text") {
+        // 逗號分隔字串轉 array，過濾空值
+        update[key] = el.value.split(",").map(s => s.trim().toUpperCase()).filter(s => s.length > 0);
       } else {
         update[key] = parseFloat(el.value);
       }
@@ -1676,7 +1684,7 @@ startAutoRefresh();
       <option value="GRID_PLACE">GRID_PLACE 網格掛出</option>
       <option value="TP_SL_ORDER">TP_SL_ORDER 止盈止損更新</option>
       <option value="CLOSE">CLOSE 平倉完成</option>
-      <option value="SL_TIER">SL_TIER 分階停損</option>
+      <option value="SL_ORDER">SL_ORDER 止損</option>
       <option value="TP_TIER">TP_TIER 分段止盈</option>
       <option value="TIME_STOP">TIME_STOP 時間停損</option>
       <option value="SLIPPAGE">SLIPPAGE 滑點偵測</option>

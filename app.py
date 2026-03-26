@@ -203,8 +203,11 @@ async def run_scan():
     pre_scan_size = cfg.get("pre_scan_size", 30)
     pool_size = cfg.get("candidate_pool_size", 10)
 
-    # 步驟1：距離15分K上軌硬性過濾，取前 pre_scan_size 個
-    filtered = [r for r in results if r.get("dist_to_upper_pct", 999) <= max_dist]
+    # 步驟1：距離15分K上軌硬性過濾，取前 pre_scan_size 個，排除黑名單
+    blacklist = set(cfg.get("blacklist", []))
+    filtered = [r for r in results
+                if r.get("dist_to_upper_pct", 999) <= max_dist
+                and r.get("symbol", "").replace("USDT", "") not in blacklist]
     top_15m = filtered[:pre_scan_size]
 
     # 步驟2：距離1H上軌硬性過濾
@@ -408,10 +411,9 @@ def api_config_set():
         "min_band_width_pct", "prev_high_min_excess_pct",
         "volume_spike_multiplier", "single_candle_max_rise_pct",
         "tp_tier1_roi", "tp_tier1_qty", "tp_tier2_roi",
-        "sl_tier1_loss_pct", "sl_tier1_close_pct",
-        "sl_tier2_loss_pct", "sl_tier2_close_pct",
-        "sl_tier3_loss_pct", "sl_tier3_close_pct",
+        "sl_loss_pct",
         "black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback",
+        "blacklist",
         "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback",
         "extend_orders_max", "extend_loss_pct",
         "system_running"

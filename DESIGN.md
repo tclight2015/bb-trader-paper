@@ -32,6 +32,12 @@
 | v4.16 | 修正黑K無限循環bug：開倉成功後不再 pop `black_k_last_k_time`，保留防重複機制，防止同一根K棒反覆觸發黑K開倉 | — |
 | v4.17 | 設定頁儲存時若 `grid_spacing_pct` 或 `grid_count` 有變更，自動對所有現有持倉取消舊網格掛單並以新設定重算 | — |
 | v4.18 | 黑K濾網2+3合併：斜率過陡 AND 高點在上軌上方才擋；斜率過陡但高點在上軌下方放行；斜率不陡無論高點在哪都放行 | — |
+| v4.48 | 止損簡化：移除三階分段止損（`place_sl_tiers`/`symbol_sl_orders`/`symbol_sl_triggered`/回落重掛邏輯）；改為單一限價止損單（`place_sl`），本金虧損達 `sl_loss_pct`% 即全部平倉；設定頁「停損設定」區塊只留一個欄位 | — |
+| v4.49 | 黑名單預設新增 DOGS | — |
+| v4.46 | 新增黑名單功能：設定頁「黑名單」區塊可輸入幣種（逗號分隔，不含USDT），掃描器自動排除；預設加入 DYDX | — |
+| v4.45 | 新增重開倉冷卻期（`reopen_cooldown_minutes`，預設10分鐘）：平倉後N分鐘內不重複開同一幣，防止震盪市場反覆開倉；設定頁「開單設定」可調；`min_volume_usdt` 預設改為0 | — |
+| v4.44 | 止盈第二段改用持倉快取實際數量（不留尾巴）；更新預設值：時間停損100分、一階停損40%全出、二三階停損門檻60%/70%比例0、放寬加碼上限20、預掃描50 | — |
+| v4.43 | 精度殘留自動清除：持倉迴圈每輪檢查持倉數量是否小於最小交易單位（step_size），是則自動市價清除，防止尾巴占名額 | — |
 | v4.42 | 報表改回只記最後一筆（完全平倉時才寫DB）；儀表板持倉卡片新增「已實現 ±XXU」標籤，即時顯示部分止盈/止損累積金額 | — |
 | v4.41 | 報表頁調整：每日績效移至歷史交易紀錄上方；歷史紀錄只顯示最近3天（DB資料仍完整保留，供下載分析用） | — |
 | v4.40 | 黑K偵測加回：v4.33 誤刪，現恢復持倉迴圈的黑K偵測（偵測到黑K→在目標價掛限價空單+建隱形網格）；設定頁加回「黑K濾網」區塊（黑K高點須低於上軌/上軌最大斜率/回看根數）；config 加回對應欄位 | — |
@@ -137,9 +143,10 @@ requirements.txt
 ### 止盈止損
 | 欄位 | 預設值 | 實作位置 | 說明 |
 |------|--------|---------|------|
-| `take_profit_price_pct` | 1.0 | `trader.py: calc_tp_price()` | SHORT止盈：價格下跌X% |
-| `force_close_price_pct` | 3.0 | `trader.py: calc_sl_price()` | SHORT止損：價格上漲X% |
-| `tp_limit_pct` | 50 | `trader.py: place_tp_sl()` | 止盈止損拆單：限價單佔%，其餘為Stop-Market |
+| `tp_tier1_roi` | 10.0 | `trader.py: place_tp_sl()` | 第一段止盈：本金獲利達X%觸發 |
+| `tp_tier1_qty` | 50.0 | `trader.py: place_tp_sl()` | 第一段止盈平倉X%倉位 |
+| `tp_tier2_roi` | 20.0 | `trader.py: place_tp_sl()` | 第二段止盈：本金獲利達X%觸發（未到則以第一段價格保底市價出場） |
+| `sl_loss_pct` | 40.0 | `trader.py: place_sl()` | 止損：本金虧損達X%，掛限價單全部平倉 |
 
 ### 持倉保護
 | 欄位 | 預設值 | 實作位置 | 說明 |
@@ -242,7 +249,10 @@ state = {
     "pending_open": set,                  # 已掛開倉單但尚未成交的幣種（計入持倉數防止超過 max_symbols）
     "candidate_pool": list,             # 當前候選監控池
     "scanner_latest_result": list,      # 掃描器最新結果（供 trader 讀取）
-    "tp_sl_orders": dict,               # symbol -> {tp_limit, tp_stop, sl_limit, sl_stop}
+    "tp_sl_orders": dict,               # symbol -> {tp1_limit, tp2_limit}
+    "symbol_sl_order": dict,            # symbol -> order_id（單一止損限價單）
+    "tp_tier1_done": set,               # 第一段止盈已成交的幣種
+    "tp_tier2_guard": dict,             # symbol -> 第二段追蹤保底價（=第一段目標價）
     "black_k_targets": dict,            # symbol -> target_price（黑K目標）
     "black_k_last_k_time": dict,        # symbol -> k_open_time（防重複）
     "hidden_grids": dict,               # symbol -> [price1, price2, ...]（隱形網格）
@@ -468,9 +478,10 @@ requirements.txt
 ### 止盈止損
 | 欄位 | 預設值 | 實作位置 | 說明 |
 |------|--------|---------|------|
-| `take_profit_price_pct` | 1.0 | `trader.py: calc_tp_price()` | SHORT止盈：價格下跌X% |
-| `force_close_price_pct` | 3.0 | `trader.py: calc_sl_price()` | SHORT止損：價格上漲X% |
-| `tp_limit_pct` | 50 | `trader.py: place_tp_sl()` | 止盈止損拆單：限價單佔%，其餘為Stop-Market |
+| `tp_tier1_roi` | 10.0 | `trader.py: place_tp_sl()` | 第一段止盈：本金獲利達X%觸發 |
+| `tp_tier1_qty` | 50.0 | `trader.py: place_tp_sl()` | 第一段止盈平倉X%倉位 |
+| `tp_tier2_roi` | 20.0 | `trader.py: place_tp_sl()` | 第二段止盈：本金獲利達X%觸發（未到則以第一段價格保底市價出場） |
+| `sl_loss_pct` | 40.0 | `trader.py: place_sl()` | 止損：本金虧損達X%，掛限價單全部平倉 |
 
 ### 持倉保護
 | 欄位 | 預設值 | 實作位置 | 說明 |
@@ -551,7 +562,10 @@ state = {
     "symbol_open_paused": set,          # 因漲幅超限暫停加碼的幣種（可自動恢復）
     "candidate_pool": list,             # 當前候選監控池
     "scanner_latest_result": list,      # 掃描器最新結果（供 trader 讀取）
-    "tp_sl_orders": dict,               # symbol -> {tp_limit, tp_stop, sl_limit, sl_stop}
+    "tp_sl_orders": dict,               # symbol -> {tp1_limit, tp2_limit}
+    "symbol_sl_order": dict,            # symbol -> order_id（單一止損限價單）
+    "tp_tier1_done": set,               # 第一段止盈已成交的幣種
+    "tp_tier2_guard": dict,             # symbol -> 第二段追蹤保底價（=第一段目標價）
     "black_k_targets": dict,            # symbol -> target_price（黑K目標）
     "black_k_last_k_time": dict,        # symbol -> k_open_time（防重複）
     "hidden_grids": dict,               # symbol -> [price1, price2, ...]（隱形網格）
