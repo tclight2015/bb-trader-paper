@@ -75,6 +75,14 @@ async def get_all_tickers_24h(session):
     return {item["symbol"]: float(item.get("quoteVolume", 0)) for item in data}
 
 
+async def get_funding_map(session):
+    """拉取所有幣的下次資金費率結算時間，回傳 {symbol: nextFundingTime(ms)}"""
+    data = await fetch_json(session, f"{BINANCE_BASE}/fapi/v1/premiumIndex")
+    if not data or not isinstance(data, list):
+        return {}
+    return {item["symbol"]: int(item.get("nextFundingTime", 0)) for item in data}
+
+
 def calc_bollinger(klines, period=20, std_mult=2.0):
     if not klines or len(klines) < period:
         return None
@@ -89,7 +97,7 @@ def calc_bollinger(klines, period=20, std_mult=2.0):
             "lower": lower, "std": std}
 
 
-async def scan_symbol(session, symbol, cfg=None, volume_map=None):
+async def scan_symbol(session, symbol, cfg=None, volume_map=None, funding_map=None):
     try:
         klines, klines_1h = await asyncio.gather(
             get_klines(session, symbol),
@@ -99,6 +107,15 @@ async def scan_symbol(session, symbol, cfg=None, volume_map=None):
         return None
     if not klines:
         return None
+
+    # 資金費率結算過濾：1小時內即將結算的幣排除
+    if funding_map is not None:
+        next_funding_ms = funding_map.get(symbol, 0)
+        if next_funding_ms > 0:
+            now_ms = int(time.time() * 1000)
+            minutes_to_funding = (next_funding_ms - now_ms) / 1000 / 60
+            if 0 < minutes_to_funding <= 90:
+                return None
 
     volume_usdt = (volume_map or {}).get(symbol, 0)
     if cfg:
@@ -174,11 +191,15 @@ async def run_scan():
                 volume_map = await get_all_tickers_24h(session)
             except Exception:
                 volume_map = {}
+            try:
+                funding_map = await get_funding_map(session)
+            except Exception:
+                funding_map = {}
 
             batch_size = 20
             for i in range(0, len(symbols), batch_size):
                 batch = symbols[i:i + batch_size]
-                tasks = [scan_symbol(session, sym, cfg_scan, volume_map) for sym in batch]
+                tasks = [scan_symbol(session, sym, cfg_scan, volume_map, funding_map) for sym in batch]
                 batch_results = await asyncio.gather(*tasks, return_exceptions=True)
                 for r in batch_results:
                     if r and not isinstance(r, Exception):
@@ -199,7 +220,21 @@ async def run_scan():
     # 同步給交易引擎（候選池）
     from trader import state as trader_state
     cfg = load_config()
-    max_dist = cfg.get("max_dist_to_upper_pct", 1.0)
+
+    # 動態篩選值：以 state 為準，None 時使用 config 基準值
+    base_dist_15m  = cfg.get("max_dist_to_upper_pct", 0.2)
+    base_dist_1h   = cfg.get("max_dist_1h_upper_pct", 0.5)
+    base_prev_high = cfg.get("prev_high_min_excess_pct", 1.0)
+
+    max_dist    = trader_state.get("dynamic_dist_15m")  or base_dist_15m
+    max_dist_1h = trader_state.get("dynamic_dist_1h")   or base_dist_1h
+    min_excess  = trader_state.get("dynamic_prev_high") or base_prev_high
+
+    # 硬性放寬上限（爛幣防線）
+    LOOSE_LIMIT_15M  = 0.8
+    LOOSE_LIMIT_1H   = 3.0
+    LOOSE_LIMIT_HIGH = 0.3   # 前高保護：越小越寬鬆，最寬鬆為此值
+
     pre_scan_size = cfg.get("pre_scan_size", 30)
     pool_size = cfg.get("candidate_pool_size", 10)
 
@@ -211,17 +246,49 @@ async def run_scan():
     top_15m = filtered[:pre_scan_size]
 
     # 步驟2：距離1H上軌硬性過濾
-    max_dist_1h = cfg.get("max_dist_1h_upper_pct", 0.5)
     top_15m = [r for r in top_15m if r.get("dist_1h_pct") is not None and r.get("dist_1h_pct", 999) <= max_dist_1h]
 
-    # 步驟3：硬性條件，前高最大超出幅度必須 >= prev_high_min_excess_pct（預設1.0%）
-    min_excess = cfg.get("prev_high_min_excess_pct", 1.0)
+    # 步驟3：前高保護硬性條件
     with_prev_high = [r for r in top_15m if r.get("prev_high_score", 0) >= min_excess]
     with_prev_high.sort(key=lambda x: x.get("prev_high_score", 0), reverse=True)
 
-    # 步驟4：在有前高的名單裡，按1H上軌距離由近到遠排序，取前 pool_size 個進候選池
+    # 步驟4：按1H上軌距離由近到遠排序，取前 pool_size 個進候選池
     with_prev_high.sort(key=lambda x: x.get("dist_1h_pct") if x.get("dist_1h_pct") is not None else 999)
     final_pool = with_prev_high[:pool_size]
+    pool_count = len(final_pool)
+
+    # 動態微調：根據本次候選池大小調整下次篩選條件
+    STEP_DIST  = 0.1
+    STEP_HIGH  = 0.1
+    EXPAND_THRESHOLD = 3   # 候選池 <= 此值 -> 放寬
+    SHRINK_THRESHOLD = 8   # 候選池 >= 此值 -> 收緊
+
+    new_dist_15m  = round(max_dist, 2)
+    new_dist_1h   = round(max_dist_1h, 2)
+    new_prev_high = round(min_excess, 2)
+
+    if pool_count <= EXPAND_THRESHOLD:
+        new_dist_15m  = round(min(max_dist   + STEP_DIST, LOOSE_LIMIT_15M), 2)
+        new_dist_1h   = round(min(max_dist_1h + STEP_DIST, LOOSE_LIMIT_1H), 2)
+        new_prev_high = round(max(min_excess  - STEP_HIGH, LOOSE_LIMIT_HIGH), 2)
+        logger.info(f"候選池僅{pool_count}個，放寬篩選 -> 15m={new_dist_15m}% 1h={new_dist_1h}% 前高={new_prev_high}%")
+    elif pool_count >= SHRINK_THRESHOLD:
+        new_dist_15m  = round(max(max_dist   - STEP_DIST, 0.05), 2)
+        new_dist_1h   = round(max(max_dist_1h - STEP_DIST, 0.05), 2)
+        new_prev_high = round(min_excess + STEP_HIGH, 2)
+        logger.info(f"候選池{pool_count}個已滿，收緊篩選 -> 15m={new_dist_15m}% 1h={new_dist_1h}% 前高={new_prev_high}%")
+
+    trader_state["dynamic_dist_15m"]  = new_dist_15m
+    trader_state["dynamic_dist_1h"]   = new_dist_1h
+    trader_state["dynamic_prev_high"] = new_prev_high
+
+    try:
+        from trader import write_log
+        write_log("SCAN", f"候選池{pool_count}個 動態篩選 15m={new_dist_15m}% 1h={new_dist_1h}% 前高={new_prev_high}%",
+                  detail={"pool_count": pool_count, "dist_15m": new_dist_15m,
+                          "dist_1h": new_dist_1h, "prev_high": new_prev_high})
+    except Exception:
+        pass
 
     trader_state["scanner_latest_result"] = [
         {**r, "dist_to_upper": r.get("dist_to_upper_pct", 0)}

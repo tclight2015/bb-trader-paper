@@ -71,6 +71,11 @@ state = {
     "ws_user_connected": False,
 
     "upper_1m_cache": {},       # symbol -> {"upper": float, "ts": float, "history": [float,...]}，1分K上軌快取
+
+    # 動態掃描篩選值（每次掃描後根據候選池大小自動微調，重啟後回到基準值）
+    "dynamic_dist_15m": None,   # 當前有效的距15分K上軌門檻（None=使用config基準值）
+    "dynamic_dist_1h": None,    # 當前有效的距1H上軌門檻
+    "dynamic_prev_high": None,  # 當前有效的前高保護門檻
 }
 
 
@@ -527,15 +532,20 @@ async def handle_close_fill(exchange: BaseExchange, cfg: dict, symbol: str,
               detail={"avg_entry": avg_entry, "close_price": close_price,
                       "pnl": round(total_pnl, 4), "roe_pct": round(roe_pct, 2)})
 
-    # 取消殘留掛單（隱形網格 SELL 單），並補平已成交的
+    # 取消所有殘留掛單（止盈/止損 BUY 單 + 隱形網格 SELL 單），並補平已成交的 SELL 單
     try:
         open_orders = await exchange.get_open_orders(symbol)
+        # 先取消所有掛單
+        try:
+            await exchange.cancel_all_orders(symbol)
+        except Exception:
+            pass
+        # 檢查哪些 SELL 單已成交（取消失敗代表已成交），需補市價平
         sell_orders = [o for o in open_orders if o.get("side") == "SELL"]
         accidental_qty = 0.0
         for order in sell_orders:
             oid = str(order["orderId"])
             result = await exchange.cancel_order(symbol, oid)
-            # 取消失敗（-2011）= 已成交，需補市價平
             if isinstance(result, dict) and result.get("code") == -2011:
                 qty = float(order.get("origQty", 0))
                 accidental_qty += qty
@@ -837,6 +847,10 @@ async def place_sl(exchange: BaseExchange, cfg: dict, symbol: str):
 async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
                              entry_price: float, trigger_type: str = "UPPER") -> bool:
     if state["paused"] or state["margin_pause"]:
+        return False
+
+    # 該幣種正在平倉中，禁止開新倉
+    if symbol in state["closing_symbols"]:
         return False
 
     # 該幣種因漲幅超限暫停加碼

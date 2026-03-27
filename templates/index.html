@@ -1580,7 +1580,7 @@ async function loadLogs() {
       </div>
     `).join('');
 
-    const eventColors = {"SCAN": "#2563eb", "FILTER": "#8892a8", "TRIGGER": "#16a34a", "ORDER": "#16a34a", "BLACK_K": "#1a2035", "TP": "#16a34a", "FORCE_CLOSE": "#dc2626", "ROE_PAUSE": "#ea580c", "ROE_RESUME": "#16a34a", "ROE_FORCE": "#dc2626", "ERROR": "#dc2626"};
+    const eventColors = {"SCAN": "#2563eb", "FILTER": "#8892a8", "TRIGGER": "#16a34a", "ORDER": "#16a34a", "BLACK_K": "#1a2035", "BLACK_K_SKIP": "#6b7280", "TP": "#16a34a", "FORCE_CLOSE": "#dc2626", "ROE_PAUSE": "#ea580c", "ROE_RESUME": "#16a34a", "ROE_FORCE": "#dc2626", "ERROR": "#dc2626"};
 
     // Logs table
     const tbody = document.getElementById('logsBody');
@@ -1680,6 +1680,7 @@ startAutoRefresh();
       <option value="ORDER">ORDER 下單</option>
       <option value="FILL">FILL 成交（含止盈止損）</option>
       <option value="BLACK_K">BLACK_K 黑K</option>
+      <option value="BLACK_K_SKIP">BLACK_K_SKIP 黑K被擋</option>
       <option value="HIDDEN_GRID_UPDATE">HIDDEN_GRID_UPDATE 網格重算</option>
       <option value="GRID_PLACE">GRID_PLACE 網格掛出</option>
       <option value="TP_SL_ORDER">TP_SL_ORDER 止盈止損更新</option>
