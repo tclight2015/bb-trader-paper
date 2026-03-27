@@ -79,8 +79,25 @@ async def get_funding_map(session):
     """拉取所有幣的下次資金費率結算時間，回傳 {symbol: nextFundingTime(ms)}"""
     data = await fetch_json(session, f"{BINANCE_BASE}/fapi/v1/premiumIndex")
     if not data or not isinstance(data, list):
-        return {}
-    return {item["symbol"]: int(item.get("nextFundingTime", 0)) for item in data}
+        return {}, {}
+    next_funding = {item["symbol"]: int(item.get("nextFundingTime", 0)) for item in data}
+    funding_rate = {item["symbol"]: float(item.get("lastFundingRate", 0)) for item in data}
+    return next_funding, funding_rate
+
+
+async def get_btc_1h_change(session):
+    """取得 BTC 最近1H漲跌幅%"""
+    try:
+        klines = await fetch_json(session, f"{BINANCE_BASE}/fapi/v1/klines",
+                                  {"symbol": "BTCUSDT", "interval": "1h", "limit": 2})
+        if klines and len(klines) >= 2:
+            prev_close = float(klines[-2][4])
+            curr_close = float(klines[-1][4])
+            if prev_close > 0:
+                return round((curr_close - prev_close) / prev_close * 100, 4)
+    except Exception:
+        pass
+    return None
 
 
 def calc_bollinger(klines, period=20, std_mult=2.0):
@@ -97,7 +114,7 @@ def calc_bollinger(klines, period=20, std_mult=2.0):
             "lower": lower, "std": std}
 
 
-async def scan_symbol(session, symbol, cfg=None, volume_map=None, funding_map=None):
+async def scan_symbol(session, symbol, cfg=None, volume_map=None, funding_map=None, funding_rate_map=None, btc_change_1h=None):
     try:
         klines, klines_1h = await asyncio.gather(
             get_klines(session, symbol),
@@ -175,6 +192,8 @@ async def scan_symbol(session, symbol, cfg=None, volume_map=None, funding_map=No
         "band_width_pct": band_width_pct,
         "volume_usdt": volume_usdt,
         "prev_high_score": prev_high_score,
+        "funding_rate": (funding_rate_map or {}).get(symbol),
+        "btc_change_1h": btc_change_1h,
     }
 
 
@@ -192,14 +211,18 @@ async def run_scan():
             except Exception:
                 volume_map = {}
             try:
-                funding_map = await get_funding_map(session)
+                funding_map, funding_rate_map = await get_funding_map(session)
             except Exception:
-                funding_map = {}
+                funding_map, funding_rate_map = {}, {}
+            try:
+                btc_1h = await get_btc_1h_change(session)
+            except Exception:
+                btc_1h = None
 
             batch_size = 20
             for i in range(0, len(symbols), batch_size):
                 batch = symbols[i:i + batch_size]
-                tasks = [scan_symbol(session, sym, cfg_scan, volume_map, funding_map) for sym in batch]
+                tasks = [scan_symbol(session, sym, cfg_scan, volume_map, funding_map, funding_rate_map, btc_1h) for sym in batch]
                 batch_results = await asyncio.gather(*tasks, return_exceptions=True)
                 for r in batch_results:
                     if r and not isinstance(r, Exception):
@@ -231,9 +254,9 @@ async def run_scan():
     min_excess  = trader_state.get("dynamic_prev_high") or base_prev_high
 
     # 硬性放寬上限（爛幣防線）
-    LOOSE_LIMIT_15M  = 0.8
-    LOOSE_LIMIT_1H   = 3.0
-    LOOSE_LIMIT_HIGH = 0.3   # 前高保護：越小越寬鬆，最寬鬆為此值
+    LOOSE_LIMIT_15M  = 2.0
+    LOOSE_LIMIT_1H   = 5.0
+    LOOSE_LIMIT_HIGH = 0.0   # 前高保護：0=完全不過濾
 
     pre_scan_size = cfg.get("pre_scan_size", 30)
     pool_size = cfg.get("candidate_pool_size", 10)

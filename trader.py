@@ -935,6 +935,8 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
                           "dist_1h_pct": candidate_info.get("dist_1h", 0),
                           "band_width_pct": candidate_info.get("band_width_pct", 0),
                           "volume_usdt": candidate_info.get("volume_usdt", 0),
+                          "funding_rate": candidate_info.get("funding_rate"),
+                          "btc_change_1h": candidate_info.get("btc_change_1h"),
                       }})
     return True
 
@@ -1159,6 +1161,8 @@ async def scan_candidates(cfg: dict, scanner_data: list = None) -> list:
                 "band_width_pct": float(item.get("band_width_pct", 0)),
                 "volume_usdt": float(item.get("volume_usdt", 0)),
                 "prev_high_score": float(item.get("prev_high_score", 0)),
+                "funding_rate": item.get("funding_rate"),
+                "btc_change_1h": item.get("btc_change_1h"),
             })
         except Exception:
             continue
