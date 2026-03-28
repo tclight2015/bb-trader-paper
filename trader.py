@@ -852,6 +852,18 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
     if symbol in state["symbol_open_paused"]:
         return False
 
+    # 資金費率結算檢查：距下次結算 <= 70 分鐘不開新倉（已持倉不影響）
+    open_syms_check = set(state["_binance_positions_cache"].keys())
+    if symbol not in open_syms_check:
+        candidate_info = next((c for c in state["candidate_pool"] if c["symbol"] == symbol), {})
+        next_funding_ms = candidate_info.get("next_funding_ms", 0)
+        if next_funding_ms > 0:
+            now_ms = int(time.time() * 1000)
+            minutes_to_funding = (next_funding_ms - now_ms) / 1000 / 60
+            if 0 < minutes_to_funding <= 70:
+                write_log("BLOCKED", f"距資金費率結算{minutes_to_funding:.0f}分鐘，不開新倉", symbol=symbol)
+                return False
+
 
     open_syms = set(state["_binance_positions_cache"].keys())
     # 加上 pending_open：已掛單但尚未成交的幣種也計入持倉數
@@ -1159,6 +1171,7 @@ async def scan_candidates(cfg: dict, scanner_data: list = None) -> list:
                 "volume_usdt": float(item.get("volume_usdt", 0)),
                 "prev_high_score": float(item.get("prev_high_score", 0)),
                 "funding_rate": item.get("funding_rate"),
+                "next_funding_ms": item.get("next_funding_ms", 0),
                 "btc_change_1h": item.get("btc_change_1h"),
             })
         except Exception:

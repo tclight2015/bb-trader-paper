@@ -125,15 +125,6 @@ async def scan_symbol(session, symbol, cfg=None, volume_map=None, funding_map=No
     if not klines:
         return None
 
-    # 資金費率結算過濾：1小時內即將結算的幣排除
-    if funding_map is not None:
-        next_funding_ms = funding_map.get(symbol, 0)
-        if next_funding_ms > 0:
-            now_ms = int(time.time() * 1000)
-            minutes_to_funding = (next_funding_ms - now_ms) / 1000 / 60
-            if 0 < minutes_to_funding <= 60:
-                return None
-
     volume_usdt = (volume_map or {}).get(symbol, 0)
     if cfg:
         min_vol = cfg.get("min_volume_usdt", 0)
@@ -193,6 +184,7 @@ async def scan_symbol(session, symbol, cfg=None, volume_map=None, funding_map=No
         "volume_usdt": volume_usdt,
         "prev_high_score": prev_high_score,
         "funding_rate": (funding_rate_map or {}).get(symbol),
+        "next_funding_ms": (funding_map or {}).get(symbol, 0),
         "btc_change_1h": btc_change_1h,
     }
 
