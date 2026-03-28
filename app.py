@@ -149,8 +149,8 @@ async def scan_symbol(session, symbol, cfg=None, volume_map=None, funding_map=No
     if price >= upper:
         return None
 
-    band_width_pct = (upper - bb["lower"]) / middle * 100
-    min_band = cfg.get("min_band_width_pct", 2.0) if cfg else 2.0
+    band_width_pct = (upper - middle) / middle * 100
+    min_band = cfg.get("min_band_width_pct", 1.0) if cfg else 1.0
     if band_width_pct < min_band:
         return None
 
@@ -501,7 +501,7 @@ def api_config_set():
         "pause_open_rise_pct", "force_close_capital_pct",
         "margin_usage_limit_pct", "min_volume_usdt",
         "candidate_pool_refresh_min",
-        "max_dist_to_upper_pct", "prev_high_min_excess_pct",
+        "max_dist_to_upper_pct", "prev_high_min_excess_pct", "min_band_width_pct",
         "tp_tier1_roi", "tp_tier1_qty", "tp_tier2_roi",
         "sl_loss_pct",
         "black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback",
