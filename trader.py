@@ -1411,10 +1411,10 @@ async def trading_loop():
                     if not current_price:
                         continue
 
-                    # 開倉判斷：優先用候選池的1分K上軌（掃描時已算好），fallback到cache，再到15分K
-                    upper_1m = candidate.get("upper_1m") or get_upper_1m(sym)
+                    # 開倉判斷使用1分K上軌（即時cache），fallback到掃描時的1m，再到15m
+                    upper_1m = get_upper_1m(sym) or candidate.get("upper_1m")
                     upper = upper_1m or candidate["upper_15m"]
-                    upper_src = "1m(scan)" if candidate.get("upper_1m") else ("1m(cache)" if get_upper_1m(sym) else "15m(fallback)")
+                    upper_src = "1m(cache)" if get_upper_1m(sym) else ("1m(scan)" if candidate.get("upper_1m") else "15m(fallback)")
                     already_has_position = sym in open_syms
                     at_max = not already_has_position and current_open_count >= cfg["max_symbols"]
 
