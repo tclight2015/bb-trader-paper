@@ -131,7 +131,7 @@ async def scan_symbol(session, symbol, cfg=None, volume_map=None, funding_map=No
         if next_funding_ms > 0:
             now_ms = int(time.time() * 1000)
             minutes_to_funding = (next_funding_ms - now_ms) / 1000 / 60
-            if 0 < minutes_to_funding <= 90:
+            if 0 < minutes_to_funding <= 60:
                 return None
 
     volume_usdt = (volume_map or {}).get(symbol, 0)
