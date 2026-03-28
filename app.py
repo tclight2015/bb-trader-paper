@@ -76,7 +76,7 @@ async def get_all_tickers_24h(session):
 
 
 async def get_funding_map(session):
-    """拉取所有幣的下次資金費率結算時間，回傳 {symbol: nextFundingTime(ms)}"""
+    """拉取資金費率相關資訊，回傳 (next_funding_map, funding_rate_map)"""
     data = await fetch_json(session, f"{BINANCE_BASE}/fapi/v1/premiumIndex")
     if not data or not isinstance(data, list):
         return {}, {}
@@ -114,7 +114,7 @@ def calc_bollinger(klines, period=20, std_mult=2.0):
             "lower": lower, "std": std}
 
 
-async def scan_symbol(session, symbol, cfg=None, volume_map=None, funding_map=None, funding_rate_map=None, btc_change_1h=None):
+async def scan_symbol(session, symbol, cfg=None, volume_map=None, funding_rate_map=None, btc_change_1h=None):
     try:
         klines, klines_1h = await asyncio.gather(
             get_klines(session, symbol),
@@ -184,7 +184,6 @@ async def scan_symbol(session, symbol, cfg=None, volume_map=None, funding_map=No
         "volume_usdt": volume_usdt,
         "prev_high_score": prev_high_score,
         "funding_rate": (funding_rate_map or {}).get(symbol),
-        "next_funding_ms": (funding_map or {}).get(symbol, 0),
         "btc_change_1h": btc_change_1h,
     }
 
@@ -203,9 +202,9 @@ async def run_scan():
             except Exception:
                 volume_map = {}
             try:
-                funding_map, funding_rate_map = await get_funding_map(session)
+                _, funding_rate_map = await get_funding_map(session)
             except Exception:
-                funding_map, funding_rate_map = {}, {}
+                funding_rate_map = {}
             try:
                 btc_1h = await get_btc_1h_change(session)
             except Exception:
@@ -214,7 +213,7 @@ async def run_scan():
             batch_size = 20
             for i in range(0, len(symbols), batch_size):
                 batch = symbols[i:i + batch_size]
-                tasks = [scan_symbol(session, sym, cfg_scan, volume_map, funding_map, funding_rate_map, btc_1h) for sym in batch]
+                tasks = [scan_symbol(session, sym, cfg_scan, volume_map, funding_rate_map, btc_1h) for sym in batch]
                 batch_results = await asyncio.gather(*tasks, return_exceptions=True)
                 for r in batch_results:
                     if r and not isinstance(r, Exception):
@@ -235,84 +234,34 @@ async def run_scan():
     # 同步給交易引擎（候選池）
     from trader import state as trader_state
     cfg = load_config()
-
-    max_dist      = cfg.get("max_dist_to_upper_pct", 1.0)
-    min_excess    = cfg.get("prev_high_min_excess_pct", 1.0)
+    max_dist = cfg.get("max_dist_to_upper_pct", 1.0)
     pre_scan_size = cfg.get("pre_scan_size", 30)
-    pool_size     = cfg.get("candidate_pool_size", 10)
+    pool_size = cfg.get("candidate_pool_size", 10)
 
-    # 步驟1：距15分K上軌 <= max_dist%，排除黑名單，取前 pre_scan_size 個
+    # 步驟1：距離15分K上軌硬性過濾，取前 pre_scan_size 個，排除黑名單
     blacklist = set(cfg.get("blacklist", []))
     filtered = [r for r in results
                 if r.get("dist_to_upper_pct", 999) <= max_dist
                 and r.get("symbol", "").replace("USDT", "") not in blacklist]
     top_15m = filtered[:pre_scan_size]
 
-    # 步驟2：前高保護 >= min_excess%，依分數由高到低排序
+    # 步驟2：距離1H上軌硬性過濾
+    max_dist_1h = cfg.get("max_dist_1h_upper_pct", 0.5)
+    top_15m = [r for r in top_15m if r.get("dist_1h_pct") is not None and r.get("dist_1h_pct", 999) <= max_dist_1h]
+
+    # 步驟3：硬性條件，前高最大超出幅度必須 >= prev_high_min_excess_pct（預設1.0%）
+    min_excess = cfg.get("prev_high_min_excess_pct", 1.0)
     with_prev_high = [r for r in top_15m if r.get("prev_high_score", 0) >= min_excess]
     with_prev_high.sort(key=lambda x: x.get("prev_high_score", 0), reverse=True)
 
-    # 步驟3：批次拉1分K上軌，按距1分K上軌由近到遠排序
-    async def fetch_1m_upper(session, symbol):
-        try:
-            klines = await fetch_json(session, f"{BINANCE_BASE}/fapi/v1/klines",
-                                      {"symbol": symbol, "interval": "1m", "limit": 25})
-            if not klines or len(klines) < 21:
-                return None
-            closes = [float(k[4]) for k in klines]
-            period = 20
-            mean = sum(closes[-period:]) / period
-            std = (sum((x - mean) ** 2 for x in closes[-period:]) / period) ** 0.5
-            upper_1m = mean + 2 * std
-            price = float(klines[-1][4])
-            dist_1m_pct = (upper_1m - price) / upper_1m * 100
-            return (symbol, upper_1m, dist_1m_pct)
-        except Exception:
-            return None
-
-    async with aiohttp.ClientSession() as session_1m:
-        tasks_1m = [fetch_1m_upper(session_1m, r["full_symbol"]) for r in with_prev_high]
-        results_1m = await asyncio.gather(*tasks_1m)
-
-    dist_1m_map = {}
-    upper_1m_map = {}
-    for res in results_1m:
-        if res:
-            sym, upper_1m, dist_1m_pct = res
-            dist_1m_map[sym] = dist_1m_pct
-            upper_1m_map[sym] = upper_1m
-
-    # 加入1分K距離，按1分K距上軌由近到遠排序
-    for r in with_prev_high:
-        r["dist_1m_pct"] = dist_1m_map.get(r["full_symbol"], 999)
-        r["upper_1m"] = upper_1m_map.get(r["full_symbol"])
-
-    with_prev_high.sort(key=lambda x: x.get("dist_1m_pct", 999))
-
-    # 步驟4：取前 pool_size 個
+    # 步驟4：在有前高的名單裡，按1H上軌距離由近到遠排序，取前 pool_size 個進候選池
+    with_prev_high.sort(key=lambda x: x.get("dist_1h_pct") if x.get("dist_1h_pct") is not None else 999)
     final_pool = with_prev_high[:pool_size]
-
-    pool_count = len(final_pool)
-
-    try:
-        from trader import write_log
-        write_log("SCAN", f"候選池{pool_count}個 15m<={max_dist}% 前高>={min_excess}%",
-                  detail={"pool_count": pool_count, "dist_15m": max_dist, "prev_high": min_excess})
-    except Exception:
-        pass
 
     trader_state["scanner_latest_result"] = [
         {**r, "dist_to_upper": r.get("dist_to_upper_pct", 0)}
         for r in final_pool
     ]
-
-    # 同步更新 candidate_pool，讓儀表板即時顯示，不等 trading_loop 週期
-    try:
-        from trader import scan_candidates
-        candidates = await scan_candidates(cfg, scanner_data=trader_state["scanner_latest_result"])
-        trader_state["candidate_pool"] = candidates
-    except Exception as e:
-        logger.error(f"候選池同步更新失敗: {e}")
 
 
 def run_scan_sync():
@@ -493,10 +442,13 @@ def api_config_set():
         "pause_open_rise_pct", "force_close_capital_pct",
         "margin_usage_limit_pct", "min_volume_usdt",
         "candidate_pool_refresh_min",
-        "max_dist_to_upper_pct", "prev_high_min_excess_pct", "min_band_width_pct",
-        "funding_block_minutes",
+        "max_dist_to_upper_pct", "max_dist_1h_upper_pct",
+        "min_band_width_pct", "prev_high_min_excess_pct",
+        "volume_spike_multiplier", "single_candle_max_rise_pct",
         "tp_tier1_roi", "tp_tier1_qty", "tp_tier2_roi",
-        "sl_loss_pct",
+        "sl_tier1_loss_pct", "sl_tier1_close_pct",
+        "sl_tier2_loss_pct", "sl_tier2_close_pct",
+        "sl_tier3_loss_pct", "sl_tier3_close_pct",
         "black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback",
         "blacklist",
         "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback",

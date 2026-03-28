@@ -32,11 +32,7 @@
 | v4.16 | 修正黑K無限循環bug：開倉成功後不再 pop `black_k_last_k_time`，保留防重複機制，防止同一根K棒反覆觸發黑K開倉 | — |
 | v4.17 | 設定頁儲存時若 `grid_spacing_pct` 或 `grid_count` 有變更，自動對所有現有持倉取消舊網格掛單並以新設定重算 | — |
 | v4.18 | 黑K濾網2+3合併：斜率過陡 AND 高點在上軌上方才擋；斜率過陡但高點在上軌下方放行；斜率不陡無論高點在哪都放行 | — |
-| v4.56 | 重構候選池篩選邏輯：移除動態調整機制，改用固定config值；新篩選流程：步驟1距15分K上軌過濾→步驟2前高保護排序過濾→步驟3數量不足直接入池/過多則依1H距離排序取前N個；移除 `max_dist_1h_upper_pct` 設定欄位（1H距離改為背後自動排序）；設定頁整合「掃描與候選池」區塊 | — |
-| v4.55 | market_snapshot 新增 `funding_rate`（開倉時的資金費率）和 `btc_change_1h`（BTC最近1H漲跌幅）；掃描時從 `premiumIndex` 批次取得，寫入 `trade_analytics` 供ML訓練使用 | — |
-| v4.55b | 動態篩選放寬上限調整：15m=2%、1H=5%、前高=0（完全不過濾）；確保行情平靜時能持續放寬到上限 | — |
-| v4.55c | 修正候選池儀表板顯示問題：掃描完成後直接 await scan_candidates 更新 candidate_pool，不再等 trading_loop 的3分鐘週期 | — |
-| v4.49 | 黑名單預設新增 DOGS | — |
+| v4.47 | config 儲存路徑改為 Railway Volume（/data/trading_config.json）：部署新版本不再覆蓋使用者設定，只有新增欄位才套用預設值；本地開發自動 fallback 到當前目錄 | — |
 | v4.46 | 新增黑名單功能：設定頁「黑名單」區塊可輸入幣種（逗號分隔，不含USDT），掃描器自動排除；預設加入 DYDX | — |
 | v4.45 | 新增重開倉冷卻期（`reopen_cooldown_minutes`，預設10分鐘）：平倉後N分鐘內不重複開同一幣，防止震盪市場反覆開倉；設定頁「開單設定」可調；`min_volume_usdt` 預設改為0 | — |
 | v4.44 | 止盈第二段改用持倉快取實際數量（不留尾巴）；更新預設值：時間停損100分、一階停損40%全出、二三階停損門檻60%/70%比例0、放寬加碼上限20、預掃描50 | — |
@@ -146,10 +142,9 @@ requirements.txt
 ### 止盈止損
 | 欄位 | 預設值 | 實作位置 | 說明 |
 |------|--------|---------|------|
-| `tp_tier1_roi` | 10.0 | `trader.py: place_tp_sl()` | 第一段止盈：本金獲利達X%觸發 |
-| `tp_tier1_qty` | 50.0 | `trader.py: place_tp_sl()` | 第一段止盈平倉X%倉位 |
-| `tp_tier2_roi` | 20.0 | `trader.py: place_tp_sl()` | 第二段止盈：本金獲利達X%觸發（未到則以第一段價格保底市價出場） |
-| `sl_loss_pct` | 40.0 | `trader.py: place_sl()` | 止損：本金虧損達X%，掛限價單全部平倉 |
+| `take_profit_price_pct` | 1.0 | `trader.py: calc_tp_price()` | SHORT止盈：價格下跌X% |
+| `force_close_price_pct` | 3.0 | `trader.py: calc_sl_price()` | SHORT止損：價格上漲X% |
+| `tp_limit_pct` | 50 | `trader.py: place_tp_sl()` | 止盈止損拆單：限價單佔%，其餘為Stop-Market |
 
 ### 持倉保護
 | 欄位 | 預設值 | 實作位置 | 說明 |
@@ -174,6 +169,7 @@ requirements.txt
 |------|--------|---------|------|
 | `min_volume_usdt` | 5,000,000 | `app.py: scan_symbol()` | 最低24H成交量（USDT） |
 | `max_dist_to_upper_pct` | 0.5 | `app.py: run_scan()` | 距15分K上軌最大距離% |
+| `max_dist_1h_upper_pct` | 1.0 | `app.py: run_scan()` ⚠️ 只排序，未硬過濾 | 距1H上軌最大距離% |
 | `min_band_width_pct` | 1.0 | `app.py: scan_symbol()` | 最低BB帶寬% |
 | `prev_high_min_excess_pct` | 1.0 | `app.py: run_scan()` | 前高保護門檻：前5根中至少一根高點須超過現價X%（固定5根，不再可調） |
 | `volume_spike_multiplier` | 3.0 | ⚠️ config 有定義，未實作 | 成交量異常倍數（超過均量N倍跳過） |
@@ -204,7 +200,6 @@ prev_high_score = count_score + avg_excess * 0.1
 | Bug | 影響版本 | 修復版本 | 說明 |
 |-----|---------|---------|------|
 | `reduce_only=False` | v1 | v2 | 止盈止損和平倉的 BUY 單必須 `reduce_only=True`，否則幣安視為開多倉 |
-| `margin_used` 啟動後不更新 | v1-v3 | v4 | `ACCOUNT_UPDATE` 的 `P` 陣列有 `iw`（initialMargin）欄位，每次持倉變動重算所有持倉的 margin_used 並寫回 balance_cache |
 | 黑K後網格未預建 | v1 | v2 | 黑K確認後不等成交就建隱形網格，讓反轉下跌也能吃到 |
 | IP被封後仍持續打API | v1-v2 | v3 | 改 WebSocket，REST 調用量大幅減少 |
 | `pause_open_capital_pct` 未實作 | v1-v3 | v4 | config 有定義但 trader.py 完全沒有對應邏輯；v4 改為漲幅控制（`pause_open_rise_pct`）並實作 |
@@ -231,6 +226,8 @@ prev_high_score = count_score + avg_excess * 0.1
 |------|------|------|
 | `single_candle_max_rise_pct` 未實作 | `app.py: scan_symbol()` | config 有定義，掃描器沒有用到此條件過濾 |
 | `volume_spike_multiplier` 未實作 | `app.py: scan_symbol()` | config 有定義，掃描器沒有成交量異常偵測邏輯 |
+| `max_dist_1h_upper_pct` 只排序不過濾 | `app.py: run_scan()` | 目前只影響候選池排序，沒有做硬性距離過濾 |
+| `ACCOUNT_UPDATE` 的 `margin_used` | `trader.py: handle_user_event()` | 已修正：從 `P` 陣列的 `iw`（initialMargin）欄位更新，並重算所有持倉的 margin_used |
 | 部分平倉 PnL 漏記 | `trader.py: handle_close_fill()` | 分批止盈時只有最後一筆平倉才記錄，中間批次 PnL 漏記 |
 
 ---
@@ -250,10 +247,7 @@ state = {
     "pending_open": set,                  # 已掛開倉單但尚未成交的幣種（計入持倉數防止超過 max_symbols）
     "candidate_pool": list,             # 當前候選監控池
     "scanner_latest_result": list,      # 掃描器最新結果（供 trader 讀取）
-    "tp_sl_orders": dict,               # symbol -> {tp1_limit, tp2_limit}
-    "symbol_sl_order": dict,            # symbol -> order_id（單一止損限價單）
-    "tp_tier1_done": set,               # 第一段止盈已成交的幣種
-    "tp_tier2_guard": dict,             # symbol -> 第二段追蹤保底價（=第一段目標價）
+    "tp_sl_orders": dict,               # symbol -> {tp_limit, tp_stop, sl_limit, sl_stop}
     "black_k_targets": dict,            # symbol -> target_price（黑K目標）
     "black_k_last_k_time": dict,        # symbol -> k_open_time（防重複）
     "hidden_grids": dict,               # symbol -> [price1, price2, ...]（隱形網格）
@@ -311,6 +305,7 @@ state = {
 ACCOUNT_UPDATE
   → 更新 balance_cache（total, available）
   → 更新 _binance_positions_cache（qty, avg_entry）
+  ⚠️ margin_used 不在此事件中，啟動後不更新
 
 ORDER_TRADE_UPDATE（status=FILLED）
   SELL 成交（開空/加碼）
@@ -330,14 +325,11 @@ ORDER_TRADE_UPDATE（status=FILLED）
 ### reward_score 計算邏輯（`database.py: _calc_reward()`）
 ```
 base = roe_pct
-- 30分鐘內獲利出場：+1.0（快速乾淨獲利）
-- 持倉 > 60 分鐘：-0.5
-- 持倉 > 120 分鐘：-1.5（策略失效或被套）
-- 持倉 < 5 分鐘且虧損：-2.0（可能誤觸）
-- close_reason == FORCE_CLOSE：-5.0（風控失守）
-- close_reason == MANUAL：-0.5
-- 平倉後1h價格反彈超過1%（做空出場後漲回）：-rebound_pct × 0.3（開倉時機差）
-- 平倉後繼續下跌：不扣分（快出是好的，不懲罰出得太早）
+- 若平倉後1h價格繼續下跌（做空方向），代表出得太早，扣分（× 0.5）
+- 持倉 < 5 分鐘：-2.0（可能誤觸）
+- 持倉 > 240 分鐘：-1.0（持倉過長）
+- close_reason == FORCE_CLOSE：-5.0
+- close_reason == MANUAL：-1.0
 ```
 
 ---
@@ -481,10 +473,9 @@ requirements.txt
 ### 止盈止損
 | 欄位 | 預設值 | 實作位置 | 說明 |
 |------|--------|---------|------|
-| `tp_tier1_roi` | 10.0 | `trader.py: place_tp_sl()` | 第一段止盈：本金獲利達X%觸發 |
-| `tp_tier1_qty` | 50.0 | `trader.py: place_tp_sl()` | 第一段止盈平倉X%倉位 |
-| `tp_tier2_roi` | 20.0 | `trader.py: place_tp_sl()` | 第二段止盈：本金獲利達X%觸發（未到則以第一段價格保底市價出場） |
-| `sl_loss_pct` | 40.0 | `trader.py: place_sl()` | 止損：本金虧損達X%，掛限價單全部平倉 |
+| `take_profit_price_pct` | 1.0 | `trader.py: calc_tp_price()` | SHORT止盈：價格下跌X% |
+| `force_close_price_pct` | 3.0 | `trader.py: calc_sl_price()` | SHORT止損：價格上漲X% |
+| `tp_limit_pct` | 50 | `trader.py: place_tp_sl()` | 止盈止損拆單：限價單佔%，其餘為Stop-Market |
 
 ### 持倉保護
 | 欄位 | 預設值 | 實作位置 | 說明 |
@@ -506,6 +497,7 @@ requirements.txt
 |------|--------|---------|------|
 | `min_volume_usdt` | 5,000,000 | `app.py: scan_symbol()` | 最低24H成交量（USDT） |
 | `max_dist_to_upper_pct` | 0.5 | `app.py: run_scan()` | 距15分K上軌最大距離% |
+| `max_dist_1h_upper_pct` | 1.0 | `app.py: run_scan()` ⚠️ 只排序，未硬過濾 | 距1H上軌最大距離% |
 | `min_band_width_pct` | 1.0 | `app.py: scan_symbol()` | 最低BB帶寬% |
 | `prev_high_min_excess_pct` | 1.0 | `app.py: run_scan()` | 前高保護門檻：前5根中至少一根高點須超過現價X%（固定5根，不再可調） |
 | `volume_spike_multiplier` | 3.0 | ⚠️ config 有定義，未實作 | 成交量異常倍數（超過均量N倍跳過） |
@@ -536,7 +528,6 @@ prev_high_score = count_score + avg_excess * 0.1
 | Bug | 影響版本 | 修復版本 | 說明 |
 |-----|---------|---------|------|
 | `reduce_only=False` | v1 | v2 | 止盈止損和平倉的 BUY 單必須 `reduce_only=True`，否則幣安視為開多倉 |
-| `margin_used` 啟動後不更新 | v1-v3 | v4 | `ACCOUNT_UPDATE` 的 `P` 陣列有 `iw`（initialMargin）欄位，每次持倉變動重算所有持倉的 margin_used 並寫回 balance_cache |
 | 黑K後網格未預建 | v1 | v2 | 黑K確認後不等成交就建隱形網格，讓反轉下跌也能吃到 |
 | IP被封後仍持續打API | v1-v2 | v3 | 改 WebSocket，REST 調用量大幅減少 |
 | `pause_open_capital_pct` 未實作 | v1-v3 | v4 | config 有定義但 trader.py 完全沒有對應邏輯；v4 改為漲幅控制（`pause_open_rise_pct`）並實作 |
@@ -549,7 +540,8 @@ prev_high_score = count_score + avg_excess * 0.1
 |------|------|------|
 | `single_candle_max_rise_pct` 未實作 | `app.py: scan_symbol()` | config 有定義，掃描器沒有用到此條件過濾 |
 | `volume_spike_multiplier` 未實作 | `app.py: scan_symbol()` | config 有定義，掃描器沒有成交量異常偵測邏輯 |
-
+| `max_dist_1h_upper_pct` 只排序不過濾 | `app.py: run_scan()` | 目前只影響候選池排序，沒有做硬性距離過濾 |
+| `ACCOUNT_UPDATE` 的 `margin_used` 未更新 | `trader.py: handle_user_event()` | WS 推送沒有 `initialMargin`，`balance_cache["margin_used"]` 只在啟動時 REST 取得，之後不更新，影響保證金使用率計算準確度 |
 | 部分平倉 PnL 漏記 | `trader.py: handle_close_fill()` | BUY 成交後若仍有持倉視為部分平倉，只重掛止盈止損，不記錄歷史。分批止盈時，只有最後一筆平倉才會記錄，中間批次 PnL 漏記 |
 
 ---
@@ -564,10 +556,7 @@ state = {
     "symbol_open_paused": set,          # 因漲幅超限暫停加碼的幣種（可自動恢復）
     "candidate_pool": list,             # 當前候選監控池
     "scanner_latest_result": list,      # 掃描器最新結果（供 trader 讀取）
-    "tp_sl_orders": dict,               # symbol -> {tp1_limit, tp2_limit}
-    "symbol_sl_order": dict,            # symbol -> order_id（單一止損限價單）
-    "tp_tier1_done": set,               # 第一段止盈已成交的幣種
-    "tp_tier2_guard": dict,             # symbol -> 第二段追蹤保底價（=第一段目標價）
+    "tp_sl_orders": dict,               # symbol -> {tp_limit, tp_stop, sl_limit, sl_stop}
     "black_k_targets": dict,            # symbol -> target_price（黑K目標）
     "black_k_last_k_time": dict,        # symbol -> k_open_time（防重複）
     "hidden_grids": dict,               # symbol -> [price1, price2, ...]（隱形網格）
@@ -590,6 +579,7 @@ state = {
 ACCOUNT_UPDATE
   → 更新 balance_cache（total, available）
   → 更新 _binance_positions_cache（qty, avg_entry）
+  ⚠️ margin_used 不在此事件中，啟動後不更新
 
 ORDER_TRADE_UPDATE（status=FILLED）
   SELL 成交（開空/加碼）
@@ -608,14 +598,11 @@ ORDER_TRADE_UPDATE（status=FILLED）
 ### reward_score 計算邏輯（`database.py: _calc_reward()`）
 ```
 base = roe_pct
-- 30分鐘內獲利出場：+1.0（快速乾淨獲利）
-- 持倉 > 60 分鐘：-0.5
-- 持倉 > 120 分鐘：-1.5（策略失效或被套）
-- 持倉 < 5 分鐘且虧損：-2.0（可能誤觸）
-- close_reason == FORCE_CLOSE：-5.0（風控失守）
-- close_reason == MANUAL：-0.5
-- 平倉後1h價格反彈超過1%（做空出場後漲回）：-rebound_pct × 0.3（開倉時機差）
-- 平倉後繼續下跌：不扣分（快出是好的，不懲罰出得太早）
+- 若平倉後1h價格繼續下跌（做空方向），代表出得太早，扣分（× 0.5）
+- 持倉 < 5 分鐘：-2.0（可能誤觸）
+- 持倉 > 240 分鐘：-1.0（持倉過長）
+- close_reason == FORCE_CLOSE：-5.0
+- close_reason == MANUAL：-1.0
 ```
 
 ### trade_analytics 補填時機
