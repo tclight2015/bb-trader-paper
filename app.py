@@ -149,8 +149,8 @@ async def scan_symbol(session, symbol, cfg=None, volume_map=None, funding_map=No
     if price >= upper:
         return None
 
-    band_width_pct = (upper - middle) / middle * 100
-    min_band = cfg.get("min_band_width_pct", 1.0) if cfg else 1.0
+    band_width_pct = (upper - bb["lower"]) / middle * 100
+    min_band = cfg.get("min_band_width_pct", 2.0) if cfg else 2.0
     if band_width_pct < min_band:
         return None
 
