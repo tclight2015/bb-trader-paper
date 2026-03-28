@@ -260,12 +260,45 @@ async def run_scan():
     with_prev_high = [r for r in top_15m if r.get("prev_high_score", 0) >= min_excess]
     with_prev_high.sort(key=lambda x: x.get("prev_high_score", 0), reverse=True)
 
-    # 步驟3：若數量 <= pool_size 直接放入；否則依距1H上軌由近到遠排序取前 pool_size 個
-    if len(with_prev_high) <= pool_size:
-        final_pool = with_prev_high
-    else:
-        with_prev_high.sort(key=lambda x: x.get("dist_1h_pct") if x.get("dist_1h_pct") is not None else 999)
-        final_pool = with_prev_high[:pool_size]
+    # 步驟3：批次拉1分K上軌，按距1分K上軌由近到遠排序
+    async def fetch_1m_upper(session, symbol):
+        try:
+            klines = await fetch_json(session, f"{BINANCE_BASE}/fapi/v1/klines",
+                                      {"symbol": symbol, "interval": "1m", "limit": 25})
+            if not klines or len(klines) < 21:
+                return None
+            closes = [float(k[4]) for k in klines]
+            period = 20
+            mean = sum(closes[-period:]) / period
+            std = (sum((x - mean) ** 2 for x in closes[-period:]) / period) ** 0.5
+            upper_1m = mean + 2 * std
+            price = float(klines[-1][4])
+            dist_1m_pct = (upper_1m - price) / upper_1m * 100
+            return (symbol, upper_1m, dist_1m_pct)
+        except Exception:
+            return None
+
+    async with aiohttp.ClientSession() as session_1m:
+        tasks_1m = [fetch_1m_upper(session_1m, r["full_symbol"]) for r in with_prev_high]
+        results_1m = await asyncio.gather(*tasks_1m)
+
+    dist_1m_map = {}
+    upper_1m_map = {}
+    for res in results_1m:
+        if res:
+            sym, upper_1m, dist_1m_pct = res
+            dist_1m_map[sym] = dist_1m_pct
+            upper_1m_map[sym] = upper_1m
+
+    # 加入1分K距離，按1分K距上軌由近到遠排序
+    for r in with_prev_high:
+        r["dist_1m_pct"] = dist_1m_map.get(r["full_symbol"], 999)
+        r["upper_1m"] = upper_1m_map.get(r["full_symbol"])
+
+    with_prev_high.sort(key=lambda x: x.get("dist_1m_pct", 999))
+
+    # 步驟4：取前 pool_size 個
+    final_pool = with_prev_high[:pool_size]
 
     pool_count = len(final_pool)
 

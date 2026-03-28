@@ -1151,7 +1151,9 @@ async def scan_candidates(cfg: dict, scanner_data: list = None) -> list:
                 "symbol": sym,
                 "price": float(item.get("price", 0)),
                 "upper_15m": float(item.get("upper", 0)),
+                "upper_1m": item.get("upper_1m"),
                 "dist_15m": float(item.get("dist_to_upper", item.get("dist_to_upper_pct", 0))),
+                "dist_1m_pct": item.get("dist_1m_pct"),
                 "dist_1h": float(item.get("dist_1h_pct", 0)) if item.get("dist_1h_pct") is not None else 0,
                 "band_width_pct": float(item.get("band_width_pct", 0)),
                 "volume_usdt": float(item.get("volume_usdt", 0)),
@@ -1396,10 +1398,10 @@ async def trading_loop():
                     if not current_price:
                         continue
 
-                    # 開倉判斷使用1分K上軌，fallback到15分K上軌
-                    upper_1m = get_upper_1m(sym)
+                    # 開倉判斷：優先用候選池的1分K上軌（掃描時已算好），fallback到cache，再到15分K
+                    upper_1m = candidate.get("upper_1m") or get_upper_1m(sym)
                     upper = upper_1m or candidate["upper_15m"]
-                    upper_src = "1m" if upper_1m else "15m(fallback)"
+                    upper_src = "1m(scan)" if candidate.get("upper_1m") else ("1m(cache)" if get_upper_1m(sym) else "15m(fallback)")
                     already_has_position = sym in open_syms
                     at_max = not already_has_position and current_open_count >= cfg["max_symbols"]
 
