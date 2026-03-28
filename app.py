@@ -318,6 +318,14 @@ async def run_scan():
         for r in final_pool
     ]
 
+    # 同步更新 candidate_pool，讓儀表板即時顯示，不等 trading_loop 週期
+    try:
+        from trader import scan_candidates
+        candidates = await scan_candidates(cfg, scanner_data=trader_state["scanner_latest_result"])
+        trader_state["candidate_pool"] = candidates
+    except Exception as e:
+        logger.error(f"候選池同步更新失敗: {e}")
+
 
 def run_scan_sync():
     loop = asyncio.new_event_loop()
