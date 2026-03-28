@@ -494,6 +494,7 @@ def api_config_set():
         "margin_usage_limit_pct", "min_volume_usdt",
         "candidate_pool_refresh_min",
         "max_dist_to_upper_pct", "prev_high_min_excess_pct", "min_band_width_pct",
+        "funding_block_minutes",
         "tp_tier1_roi", "tp_tier1_qty", "tp_tier2_roi",
         "sl_loss_pct",
         "black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback",

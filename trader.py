@@ -860,7 +860,7 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
         if next_funding_ms > 0:
             now_ms = int(time.time() * 1000)
             minutes_to_funding = (next_funding_ms - now_ms) / 1000 / 60
-            if 0 < minutes_to_funding <= 70:
+            if 0 < minutes_to_funding <= cfg.get("funding_block_minutes", 70):
                 write_log("BLOCKED", f"距資金費率結算{minutes_to_funding:.0f}分鐘，不開新倉", symbol=symbol)
                 return False
 

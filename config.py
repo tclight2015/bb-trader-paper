@@ -51,7 +51,7 @@ DEFAULT_CONFIG = {
     "margin_usage_limit_pct": 75.0,    # 全帳戶保證金使用率上限%
 
     # === 掃描篩選條件 ===
-    "min_volume_usdt": 0,      # 最低24H成交量（USDT），0=無限制
+    "funding_block_minutes": 70,  # 距資金費率結算X分鐘內不開新倉（0=停用）
     "min_band_width_pct": 1.0, # BB帶寬最小值%（(上軌-中軌)/中軌），過濾波動太小的幣
     "max_dist_to_upper_pct": 1.0,      # 距15分K上軌最大距離%（候選池篩選條件）
     "prev_high_min_excess_pct": 1.0,   # 前高保護：前5根中至少一根高點須超過現價X%
