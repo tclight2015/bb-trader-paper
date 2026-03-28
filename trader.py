@@ -192,7 +192,7 @@ async def refresh_upper_1m(exchange: BaseExchange, symbols: list):
                     "history": history
                 }
         except Exception as e:
-            logger.debug(f"1分K上軌更新失敗 {sym}: {e}")
+            logger.warning(f"1分K上軌更新失敗 {sym}: {e}")
 
     await asyncio.gather(*[fetch_one(sym) for sym in symbols])
 
@@ -1397,14 +1397,16 @@ async def trading_loop():
                         continue
 
                     # 開倉判斷使用1分K上軌，fallback到15分K上軌
-                    upper = get_upper_1m(sym) or candidate["upper_15m"]
+                    upper_1m = get_upper_1m(sym)
+                    upper = upper_1m or candidate["upper_15m"]
+                    upper_src = "1m" if upper_1m else "15m(fallback)"
                     already_has_position = sym in open_syms
                     at_max = not already_has_position and current_open_count >= cfg["max_symbols"]
 
                     # 觸碰上軌開倉
                     if current_price >= upper * 0.9995:
                         if sym not in state["triggered_symbols"]:
-                            write_log("TRIGGER", f"觸碰上軌(1m) price={current_price} upper_1m={upper}", symbol=sym)
+                            write_log("TRIGGER", f"觸碰上軌({upper_src}) price={current_price} upper={upper}", symbol=sym)
                             state["triggered_symbols"].add(sym)
                             if not at_max:
                                 success = await try_open_position(exchange, cfg, sym, upper, "UPPER")
