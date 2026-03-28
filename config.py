@@ -52,9 +52,8 @@ DEFAULT_CONFIG = {
 
     # === 掃描篩選條件 ===
     "min_volume_usdt": 0,      # 最低24H成交量（USDT），0=無限制
-    "max_dist_to_upper_pct": 0.2,      # 距15分K上軌最大距離%（基準值，系統會動態微調）
-    "max_dist_1h_upper_pct": 0.5,      # 距1H上軌最大距離%（基準值，系統會動態微調）
-    "prev_high_min_excess_pct": 1.0,   # 前高保護：前5根中至少一根高點須超過現價X%（基準值，系統會動態微調）
+    "max_dist_to_upper_pct": 1.0,      # 距15分K上軌最大距離%（候選池篩選條件）
+    "prev_high_min_excess_pct": 1.0,   # 前高保護：前5根中至少一根高點須超過現價X%
 
     # === 黑名單 ===
     "blacklist": ["DYDX", "DOGS"],     # 排除不進候選池的幣種（不含USDT）

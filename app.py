@@ -244,72 +244,35 @@ async def run_scan():
     from trader import state as trader_state
     cfg = load_config()
 
-    # 動態篩選值：以 state 為準，None 時使用 config 基準值
-    base_dist_15m  = cfg.get("max_dist_to_upper_pct", 0.2)
-    base_dist_1h   = cfg.get("max_dist_1h_upper_pct", 0.5)
-    base_prev_high = cfg.get("prev_high_min_excess_pct", 1.0)
-
-    max_dist    = trader_state.get("dynamic_dist_15m")  or base_dist_15m
-    max_dist_1h = trader_state.get("dynamic_dist_1h")   or base_dist_1h
-    min_excess  = trader_state.get("dynamic_prev_high") or base_prev_high
-
-    # 硬性放寬上限（爛幣防線）
-    LOOSE_LIMIT_15M  = 2.0
-    LOOSE_LIMIT_1H   = 5.0
-    LOOSE_LIMIT_HIGH = 0.0   # 前高保護：0=完全不過濾
-
+    max_dist      = cfg.get("max_dist_to_upper_pct", 1.0)
+    min_excess    = cfg.get("prev_high_min_excess_pct", 1.0)
     pre_scan_size = cfg.get("pre_scan_size", 30)
-    pool_size = cfg.get("candidate_pool_size", 10)
+    pool_size     = cfg.get("candidate_pool_size", 10)
 
-    # 步驟1：距離15分K上軌硬性過濾，取前 pre_scan_size 個，排除黑名單
+    # 步驟1：距15分K上軌 <= max_dist%，排除黑名單，取前 pre_scan_size 個
     blacklist = set(cfg.get("blacklist", []))
     filtered = [r for r in results
                 if r.get("dist_to_upper_pct", 999) <= max_dist
                 and r.get("symbol", "").replace("USDT", "") not in blacklist]
     top_15m = filtered[:pre_scan_size]
 
-    # 步驟2：距離1H上軌硬性過濾
-    top_15m = [r for r in top_15m if r.get("dist_1h_pct") is not None and r.get("dist_1h_pct", 999) <= max_dist_1h]
-
-    # 步驟3：前高保護硬性條件
+    # 步驟2：前高保護 >= min_excess%，依分數由高到低排序
     with_prev_high = [r for r in top_15m if r.get("prev_high_score", 0) >= min_excess]
     with_prev_high.sort(key=lambda x: x.get("prev_high_score", 0), reverse=True)
 
-    # 步驟4：按1H上軌距離由近到遠排序，取前 pool_size 個進候選池
-    with_prev_high.sort(key=lambda x: x.get("dist_1h_pct") if x.get("dist_1h_pct") is not None else 999)
-    final_pool = with_prev_high[:pool_size]
+    # 步驟3：若數量 <= pool_size 直接放入；否則依距1H上軌由近到遠排序取前 pool_size 個
+    if len(with_prev_high) <= pool_size:
+        final_pool = with_prev_high
+    else:
+        with_prev_high.sort(key=lambda x: x.get("dist_1h_pct") if x.get("dist_1h_pct") is not None else 999)
+        final_pool = with_prev_high[:pool_size]
+
     pool_count = len(final_pool)
-
-    # 動態微調：根據本次候選池大小調整下次篩選條件
-    STEP_DIST  = 0.1
-    STEP_HIGH  = 0.1
-    EXPAND_THRESHOLD = 3   # 候選池 <= 此值 -> 放寬
-    SHRINK_THRESHOLD = 8   # 候選池 >= 此值 -> 收緊
-
-    new_dist_15m  = round(max_dist, 2)
-    new_dist_1h   = round(max_dist_1h, 2)
-    new_prev_high = round(min_excess, 2)
-
-    if pool_count <= EXPAND_THRESHOLD:
-        new_dist_15m  = round(min(max_dist   + STEP_DIST, LOOSE_LIMIT_15M), 2)
-        new_dist_1h   = round(min(max_dist_1h + STEP_DIST, LOOSE_LIMIT_1H), 2)
-        new_prev_high = round(max(min_excess  - STEP_HIGH, LOOSE_LIMIT_HIGH), 2)
-        logger.info(f"候選池僅{pool_count}個，放寬篩選 -> 15m={new_dist_15m}% 1h={new_dist_1h}% 前高={new_prev_high}%")
-    elif pool_count >= SHRINK_THRESHOLD:
-        new_dist_15m  = round(max(max_dist   - STEP_DIST, 0.05), 2)
-        new_dist_1h   = round(max(max_dist_1h - STEP_DIST, 0.05), 2)
-        new_prev_high = round(min_excess + STEP_HIGH, 2)
-        logger.info(f"候選池{pool_count}個已滿，收緊篩選 -> 15m={new_dist_15m}% 1h={new_dist_1h}% 前高={new_prev_high}%")
-
-    trader_state["dynamic_dist_15m"]  = new_dist_15m
-    trader_state["dynamic_dist_1h"]   = new_dist_1h
-    trader_state["dynamic_prev_high"] = new_prev_high
 
     try:
         from trader import write_log
-        write_log("SCAN", f"候選池{pool_count}個 動態篩選 15m={new_dist_15m}% 1h={new_dist_1h}% 前高={new_prev_high}%",
-                  detail={"pool_count": pool_count, "dist_15m": new_dist_15m,
-                          "dist_1h": new_dist_1h, "prev_high": new_prev_high})
+        write_log("SCAN", f"候選池{pool_count}個 15m<={max_dist}% 前高>={min_excess}%",
+                  detail={"pool_count": pool_count, "dist_15m": max_dist, "prev_high": min_excess})
     except Exception:
         pass
 
@@ -505,9 +468,7 @@ def api_config_set():
         "pause_open_rise_pct", "force_close_capital_pct",
         "margin_usage_limit_pct", "min_volume_usdt",
         "candidate_pool_refresh_min",
-        "max_dist_to_upper_pct", "max_dist_1h_upper_pct",
-        "min_band_width_pct", "prev_high_min_excess_pct",
-        "volume_spike_multiplier", "single_candle_max_rise_pct",
+        "max_dist_to_upper_pct", "prev_high_min_excess_pct",
         "tp_tier1_roi", "tp_tier1_qty", "tp_tier2_roi",
         "sl_loss_pct",
         "black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback",

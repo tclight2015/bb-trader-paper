@@ -71,11 +71,6 @@ state = {
     "ws_user_connected": False,
 
     "upper_1m_cache": {},       # symbol -> {"upper": float, "ts": float, "history": [float,...]}，1分K上軌快取
-
-    # 動態掃描篩選值（每次掃描後根據候選池大小自動微調，重啟後回到基準值）
-    "dynamic_dist_15m": None,   # 當前有效的距15分K上軌門檻（None=使用config基準值）
-    "dynamic_dist_1h": None,    # 當前有效的距1H上軌門檻
-    "dynamic_prev_high": None,  # 當前有效的前高保護門檻
 }
 
 

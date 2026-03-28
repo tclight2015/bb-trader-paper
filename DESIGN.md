@@ -32,7 +32,10 @@
 | v4.16 | 修正黑K無限循環bug：開倉成功後不再 pop `black_k_last_k_time`，保留防重複機制，防止同一根K棒反覆觸發黑K開倉 | — |
 | v4.17 | 設定頁儲存時若 `grid_spacing_pct` 或 `grid_count` 有變更，自動對所有現有持倉取消舊網格掛單並以新設定重算 | — |
 | v4.18 | 黑K濾網2+3合併：斜率過陡 AND 高點在上軌上方才擋；斜率過陡但高點在上軌下方放行；斜率不陡無論高點在哪都放行 | — |
+| v4.56 | 重構候選池篩選邏輯：移除動態調整機制，改用固定config值；新篩選流程：步驟1距15分K上軌過濾→步驟2前高保護排序過濾→步驟3數量不足直接入池/過多則依1H距離排序取前N個；移除 `max_dist_1h_upper_pct` 設定欄位（1H距離改為背後自動排序）；設定頁整合「掃描與候選池」區塊 | — |
 | v4.55 | market_snapshot 新增 `funding_rate`（開倉時的資金費率）和 `btc_change_1h`（BTC最近1H漲跌幅）；掃描時從 `premiumIndex` 批次取得，寫入 `trade_analytics` 供ML訓練使用 | — |
+| v4.55b | 動態篩選放寬上限調整：15m=2%、1H=5%、前高=0（完全不過濾）；確保行情平靜時能持續放寬到上限 | — |
+| v4.55c | 修正候選池儀表板顯示問題：掃描完成後直接 await scan_candidates 更新 candidate_pool，不再等 trading_loop 的3分鐘週期 | — |
 | v4.49 | 黑名單預設新增 DOGS | — |
 | v4.46 | 新增黑名單功能：設定頁「黑名單」區塊可輸入幣種（逗號分隔，不含USDT），掃描器自動排除；預設加入 DYDX | — |
 | v4.45 | 新增重開倉冷卻期（`reopen_cooldown_minutes`，預設10分鐘）：平倉後N分鐘內不重複開同一幣，防止震盪市場反覆開倉；設定頁「開單設定」可調；`min_volume_usdt` 預設改為0 | — |
@@ -171,7 +174,6 @@ requirements.txt
 |------|--------|---------|------|
 | `min_volume_usdt` | 5,000,000 | `app.py: scan_symbol()` | 最低24H成交量（USDT） |
 | `max_dist_to_upper_pct` | 0.5 | `app.py: run_scan()` | 距15分K上軌最大距離% |
-| `max_dist_1h_upper_pct` | 1.0 | `app.py: run_scan()` ⚠️ 只排序，未硬過濾 | 距1H上軌最大距離% |
 | `min_band_width_pct` | 1.0 | `app.py: scan_symbol()` | 最低BB帶寬% |
 | `prev_high_min_excess_pct` | 1.0 | `app.py: run_scan()` | 前高保護門檻：前5根中至少一根高點須超過現價X%（固定5根，不再可調） |
 | `volume_spike_multiplier` | 3.0 | ⚠️ config 有定義，未實作 | 成交量異常倍數（超過均量N倍跳過） |
@@ -229,7 +231,6 @@ prev_high_score = count_score + avg_excess * 0.1
 |------|------|------|
 | `single_candle_max_rise_pct` 未實作 | `app.py: scan_symbol()` | config 有定義，掃描器沒有用到此條件過濾 |
 | `volume_spike_multiplier` 未實作 | `app.py: scan_symbol()` | config 有定義，掃描器沒有成交量異常偵測邏輯 |
-| `max_dist_1h_upper_pct` 只排序不過濾 | `app.py: run_scan()` | 目前只影響候選池排序，沒有做硬性距離過濾 |
 | 部分平倉 PnL 漏記 | `trader.py: handle_close_fill()` | 分批止盈時只有最後一筆平倉才記錄，中間批次 PnL 漏記 |
 
 ---
@@ -505,7 +506,6 @@ requirements.txt
 |------|--------|---------|------|
 | `min_volume_usdt` | 5,000,000 | `app.py: scan_symbol()` | 最低24H成交量（USDT） |
 | `max_dist_to_upper_pct` | 0.5 | `app.py: run_scan()` | 距15分K上軌最大距離% |
-| `max_dist_1h_upper_pct` | 1.0 | `app.py: run_scan()` ⚠️ 只排序，未硬過濾 | 距1H上軌最大距離% |
 | `min_band_width_pct` | 1.0 | `app.py: scan_symbol()` | 最低BB帶寬% |
 | `prev_high_min_excess_pct` | 1.0 | `app.py: run_scan()` | 前高保護門檻：前5根中至少一根高點須超過現價X%（固定5根，不再可調） |
 | `volume_spike_multiplier` | 3.0 | ⚠️ config 有定義，未實作 | 成交量異常倍數（超過均量N倍跳過） |
@@ -549,7 +549,6 @@ prev_high_score = count_score + avg_excess * 0.1
 |------|------|------|
 | `single_candle_max_rise_pct` 未實作 | `app.py: scan_symbol()` | config 有定義，掃描器沒有用到此條件過濾 |
 | `volume_spike_multiplier` 未實作 | `app.py: scan_symbol()` | config 有定義，掃描器沒有成交量異常偵測邏輯 |
-| `max_dist_1h_upper_pct` 只排序不過濾 | `app.py: run_scan()` | 目前只影響候選池排序，沒有做硬性距離過濾 |
 
 | 部分平倉 PnL 漏記 | `trader.py: handle_close_fill()` | BUY 成交後若仍有持倉視為部分平倉，只重掛止盈止損，不記錄歷史。分批止盈時，只有最後一筆平倉才會記錄，中間批次 PnL 漏記 |
 
