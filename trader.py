@@ -1403,6 +1403,10 @@ async def trading_loop():
                     already_has_position = sym in open_syms
                     at_max = not already_has_position and current_open_count >= cfg["max_symbols"]
 
+                    # 診斷日誌：記錄每個候選幣的現價和上軌（每30秒一次）
+                    if int(time.time()) % 30 == 0:
+                        write_log("DEBUG", f"監控中 price={current_price} upper_{upper_src}={upper} diff={(upper-current_price)/upper*100:.3f}%", symbol=sym)
+
                     # 觸碰上軌開倉
                     if current_price >= upper * 0.9995:
                         if sym not in state["triggered_symbols"]:
