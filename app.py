@@ -656,6 +656,23 @@ def api_logs_export():
     )
 
 
+@app.route("/api/reset_all_data", methods=["POST"])
+def api_reset_all_data():
+    """清空所有DB資料，重新開始（日誌、交易記錄、報表全清）"""
+    try:
+        from database import get_conn
+        conn = get_conn()
+        conn.execute("DELETE FROM system_log")
+        conn.execute("DELETE FROM trade_history")
+        conn.execute("DELETE FROM trade_analytics")
+        conn.execute("DELETE FROM capital_log")
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "msg": "所有資料已清空"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 init_db()
 
 _scanner_thread = threading.Thread(target=background_scanner)
