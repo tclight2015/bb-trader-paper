@@ -168,17 +168,30 @@ def _calc_bb_upper(klines: list, period: int = 20, std_mult: float = 2.0) -> flo
     return mean + std_mult * std
 
 
+# 1分K上軌更新節流：每10秒最多更新一次
+_upper_1m_last_refresh = 0.0
+
 async def refresh_upper_1m(exchange: BaseExchange, symbols: list):
-    """批次並發拉1分K，更新 upper_1m_cache（每輪主循環呼叫，10秒一次）"""
+    """批次並發拉1分K，更新 upper_1m_cache（節流：10秒一次）"""
+    global _upper_1m_last_refresh
     if not symbols:
         return
+    now = time.time()
+    if now - _upper_1m_last_refresh < 10.0:
+        return  # 節流，不重複打 API
+    _upper_1m_last_refresh = now
 
-    async def fetch_one(sym):
+    import aiohttp as _aiohttp
+    async def fetch_one(session, sym):
         try:
-            klines = await exchange.get_klines(sym, "1m", limit=25)
+            async with session.get(
+                "https://fapi.binance.com/fapi/v1/klines",
+                params={"symbol": sym, "interval": "1m", "limit": 25},
+                timeout=_aiohttp.ClientTimeout(total=8)
+            ) as r:
+                klines = await r.json()
             upper = _calc_bb_upper(klines)
             if upper:
-                # 同時計算中軌（BB中軌 = 20期移動平均）
                 closes = [float(k[4]) for k in klines]
                 period = 20
                 middle = sum(closes[-period:]) / period if len(closes) >= period else None
@@ -197,12 +210,15 @@ async def refresh_upper_1m(exchange: BaseExchange, symbols: list):
             logger.warning(f"1分K上軌更新失敗 {sym}: {e}")
 
     try:
-        await asyncio.wait_for(
-            asyncio.gather(*[fetch_one(sym) for sym in symbols], return_exceptions=True),
-            timeout=15.0
-        )
+        async with _aiohttp.ClientSession() as session:
+            await asyncio.wait_for(
+                asyncio.gather(*[fetch_one(session, sym) for sym in symbols], return_exceptions=True),
+                timeout=12.0
+            )
     except asyncio.TimeoutError:
-        logger.warning(f"refresh_upper_1m 整批 timeout，跳過本輪")
+        logger.warning("refresh_upper_1m 整批 timeout，跳過本輪")
+    except Exception as e:
+        logger.warning(f"refresh_upper_1m 失敗: {e}")
 
 
 def get_upper_1m(symbol: str) -> float | None:
@@ -1456,12 +1472,9 @@ async def trading_loop():
                     if s in new_pool_syms or s in open_syms_now
                 }
 
-            # 2.5 批次更新1分K上軌（候選池 + 現有持倉）
+            # 2.5 批次更新1分K上軌（候選池 + 現有持倉，內建10秒節流+12秒timeout）
             all_watch_syms = list({c["symbol"] for c in state["candidate_pool"]} | open_syms)
-            try:
-                await asyncio.wait_for(refresh_upper_1m(exchange, all_watch_syms), timeout=20.0)
-            except asyncio.TimeoutError:
-                logger.warning("refresh_upper_1m 超時跳過")
+            await refresh_upper_1m(exchange, all_watch_syms)
 
             # 3. 候選池開倉監控
             if not state["paused"] and not state["margin_pause"]:
