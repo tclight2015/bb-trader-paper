@@ -48,8 +48,7 @@ async def get_all_symbols(session):
         try:
             if (s.get("contractType") == "PERPETUAL" and
                     s.get("quoteAsset") == "USDT" and
-                    s.get("status") == "TRADING" and
-                    s.get("fundingIntervalHours", 8) != 1):
+                    s.get("status") == "TRADING"):
                 symbols.append(s["symbol"])
         except Exception:
             continue
@@ -195,7 +194,9 @@ async def run_scan():
     try:
         async with aiohttp.ClientSession() as session:
             symbols = await get_all_symbols(session)
+            logger.info(f"掃描：取得 {len(symbols)} 個幣種")
             if not symbols:
+                logger.error("get_all_symbols 回傳空，跳過本輪掃描")
                 return
             cfg_scan = load_config()
             try:
@@ -288,8 +289,14 @@ def run_scan_sync():
 
 def background_scanner():
     while True:
-        if not scanner_cache["is_scanning"]:
-            run_scan_sync()
+        try:
+            if not scanner_cache["is_scanning"]:
+                run_scan_sync()
+        except Exception as e:
+            logger.error(f"掃描器 thread 錯誤，60秒後重試: {e}", exc_info=True)
+            scanner_cache["is_scanning"] = False
+            time.sleep(60)
+            continue
         time.sleep(180)  # 3分鐘掃一次，避免API限速
 
 
@@ -465,10 +472,32 @@ def api_config_set():
         "funding_block_minutes",
         "system_running"
     ]
+    # 整數欄位
+    int_keys = {"leverage", "grid_count", "time_stop_minutes", "max_symbols",
+                "max_orders_per_symbol", "scale_up_after_order", "candidate_pool_size",
+                "pre_scan_size", "sl_cooldown_minutes", "candidate_pool_refresh_min",
+                "black_k_upper_slope_lookback", "extend_orders_max", "funding_block_minutes"}
+    # 布林欄位
+    bool_keys = {"black_k_require_below_upper", "system_running"}
+    # 列表欄位
+    list_keys = {"blacklist"}
+
     grid_changed = any(k in data for k in ["grid_spacing_pct", "grid_count"])
     for k in allowed_keys:
-        if k in data:
-            cfg[k] = data[k]
+        if k not in data:
+            continue
+        v = data[k]
+        try:
+            if k in bool_keys:
+                cfg[k] = bool(v)
+            elif k in list_keys:
+                cfg[k] = v if isinstance(v, list) else [x.strip() for x in str(v).split(",") if x.strip()]
+            elif k in int_keys:
+                cfg[k] = int(v)
+            else:
+                cfg[k] = float(v)
+        except (ValueError, TypeError):
+            cfg[k] = v  # 轉型失敗保留原值
     save_config(cfg)
 
     # 若網格相關設定有變更，對所有現有持倉重算網格
