@@ -1413,6 +1413,7 @@ const CONFIG_LABELS = {
   black_k_require_below_upper:   ["黑K高點須低於上軌", "勾選=啟用，斜率過陡時高點在上軌上方才攔"],
   black_k_max_upper_slope_pct:   ["上軌最大斜率%/根", "每根1分K上軌漲幅超過此值=動能太強，封鎖黑K"],
   black_k_upper_slope_lookback:  ["斜率計算回看根數", ""],
+  sl_cooldown_minutes:          ["止損冷卻分鐘數", "止損後X分鐘內不再對該幣開倉，0=停用"],
   sl_loss_pct:                   ["停損門檻（本金虧%）", "本金虧損達此%掛出限價止損單，全部平倉"],
 };
 
@@ -1426,7 +1427,7 @@ const CONFIG_SECTIONS = [
   { label: "黑K濾網", color: "gray", icon: "🖤",
     keys: ["black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback"] },
   { label: "停損設定", color: "darkred", icon: "🔴",
-    keys: ["sl_loss_pct"] },
+    keys: ["sl_loss_pct", "sl_cooldown_minutes"] },
   { label: "保護機制", color: "orange", icon: "⚠️",
     keys: ["margin_usage_limit_pct"] },
   { label: "網格設定", color: "teal", icon: "📐",

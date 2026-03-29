@@ -67,6 +67,8 @@ state = {
     "triggered_symbols": set(),
     "symbol_last_close_time": {},  # symbol -> 上次平倉時間戳（用於冷卻期）
     "symbol_open_paused": set(),   # 因價格上漲暫停加碼的幣種（可自動恢復）
+    "sl_cooldown_until": {},        # {symbol: timestamp}，止損後冷卻期，期間不開新倉
+    "symbol_sl_triggered": set(),  # 止損單已觸發的幣種，等待完全平倉，不再重掛任何單
     "ws_price_connected": False,
     "ws_user_connected": False,
 
@@ -470,6 +472,23 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
                     state["tp_tier1_done"].add(symbol)
                     write_log("TP_TIER", f"第一段止盈成交 @ {fill_price}，重掛第二段", symbol=symbol)
 
+                # 止損成交：取消所有殘留掛單（含隱形網格加碼單）再重掛
+                if close_reason == "SL_WS" and sl_order_id and str(order_id) == sl_order_id:
+                    state["symbol_sl_triggered"].add(symbol)
+                    try:
+                        await exchange.cancel_all_orders(symbol)
+                    except Exception:
+                        pass
+                    # 設定冷卻期，期間不再開倉
+                    cooldown_min = cfg.get("sl_cooldown_minutes", 30)
+                    if cooldown_min > 0:
+                        state["sl_cooldown_until"][symbol] = time.time() + cooldown_min * 60
+                        write_log("BLOCKED", f"止損冷卻 {cooldown_min} 分鐘，暫停開倉", symbol=symbol)
+
+                # 止損觸發中，不重掛任何單
+                if symbol in state["symbol_sl_triggered"]:
+                    return
+
                 # 重掛止盈止損
                 await asyncio.sleep(0.5)
                 await place_tp_sl(exchange, cfg, symbol)
@@ -852,6 +871,15 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
     if symbol in state["symbol_open_paused"]:
         return False
 
+    # 止損冷卻期檢查
+    cooldown_until = state["sl_cooldown_until"].get(symbol, 0)
+    if cooldown_until > time.time():
+        remaining = int((cooldown_until - time.time()) / 60)
+        write_log("BLOCKED", f"止損冷卻中，剩餘約 {remaining} 分鐘", symbol=symbol)
+        return False
+    elif cooldown_until > 0:
+        state["sl_cooldown_until"].pop(symbol, None)
+
     # 資金費率結算檢查：距下次結算 <= 70 分鐘不開新倉（已持倉不影響）
     open_syms_check = set(state["_binance_positions_cache"].keys())
     if symbol not in open_syms_check:
@@ -1051,6 +1079,7 @@ def _clear_symbol_state(symbol: str):
     state["symbol_open_time"].pop(symbol, None)
     state["tp_tier1_done"].discard(symbol)
     state["tp_tier2_guard"].pop(symbol, None)
+    state["symbol_sl_triggered"].discard(symbol)
     state["margin_pause"] = False
 
 
@@ -1204,6 +1233,7 @@ async def reset_system(exchange: BaseExchange, cfg: dict) -> dict:
     state["symbol_open_time"].pop(symbol, None)
     state["tp_tier1_done"].discard(symbol)
     state["tp_tier2_guard"].pop(symbol, None)
+    state["symbol_sl_triggered"].discard(symbol)
     state["margin_pause"] = False
     state["_binance_positions_cache"] = all_positions
 
