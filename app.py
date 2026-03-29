@@ -264,6 +264,14 @@ async def run_scan():
         for r in final_pool
     ]
 
+    # 立刻同步更新 candidate_pool，不等 trading_loop 週期
+    try:
+        from trader import scan_candidates
+        candidates = await scan_candidates(cfg, scanner_data=trader_state["scanner_latest_result"])
+        trader_state["candidate_pool"] = candidates
+    except Exception as e:
+        logger.error(f"候選池同步更新失敗: {e}")
+
     try:
         write_log("SCAN", f"候選池{len(final_pool)}個 15m<={max_dist}% 1h<={max_dist_1h}% 前高>={min_excess}%",
                   detail={"pool_count": len(final_pool)})
