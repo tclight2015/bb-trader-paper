@@ -16,7 +16,10 @@ from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 TZ_TAIPEI = timezone(timedelta(hours=8))
-DB_FILE = "trading.db"
+import os
+_DB_VOLUME = "/data/trading.db"
+_DB_LOCAL  = "trading.db"
+DB_FILE = _DB_VOLUME if os.path.isdir("/data") else _DB_LOCAL
 
 
 def get_conn():
