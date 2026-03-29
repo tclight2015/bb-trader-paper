@@ -593,10 +593,15 @@ def api_capital_log_post():
 
 @app.route("/api/logs")
 def api_logs():
-    event_type = request.args.get("event_type")
-    symbol = request.args.get("symbol")
-    limit = int(request.args.get("limit", 200))
-    return jsonify(get_logs(event_type, symbol, limit))
+    try:
+        event_type = request.args.get("event_type")
+        symbol = request.args.get("symbol")
+        limit = int(request.args.get("limit", 200))
+        result = get_logs(event_type, symbol, limit)
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 
 @app.route("/api/logs/summary")
