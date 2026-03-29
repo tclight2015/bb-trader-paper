@@ -1458,6 +1458,23 @@ async def trading_loop():
             if not state["paused"] and not state["margin_pause"]:
                 current_open_count = len(open_syms)
 
+                # 診斷 log：每30輪（約90秒）輸出一次候選池狀態
+                _dc = state.get("_diag_counter", 0) + 1
+                state["_diag_counter"] = _dc
+                if _dc % 30 == 1:
+                    pool_diag = []
+                    for c in state["candidate_pool"]:
+                        s = c["symbol"]
+                        cp = get_cached_price(s)
+                        u1m = get_upper_1m(s)
+                        u15m = c.get("upper_15m", 0)
+                        pool_diag.append(f"{s} price={cp} upper_1m={u1m} upper_15m={u15m:.6f}")
+                    logger.info(
+                        f"[POOL_DIAG] paused={state['paused']} margin_pause={state['margin_pause']} "
+                        f"triggered={state['triggered_symbols']} pool={len(state['candidate_pool'])}\n"
+                        + "\n".join(pool_diag)
+                    )
+
                 for candidate in state["candidate_pool"]:
                     sym = candidate["symbol"]
                     current_price = get_cached_price(sym)
