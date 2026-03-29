@@ -196,7 +196,13 @@ async def refresh_upper_1m(exchange: BaseExchange, symbols: list):
         except Exception as e:
             logger.warning(f"1分K上軌更新失敗 {sym}: {e}")
 
-    await asyncio.gather(*[fetch_one(sym) for sym in symbols])
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*[fetch_one(sym) for sym in symbols], return_exceptions=True),
+            timeout=15.0
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"refresh_upper_1m 整批 timeout，跳過本輪")
 
 
 def get_upper_1m(symbol: str) -> float | None:
@@ -1452,7 +1458,10 @@ async def trading_loop():
 
             # 2.5 批次更新1分K上軌（候選池 + 現有持倉）
             all_watch_syms = list({c["symbol"] for c in state["candidate_pool"]} | open_syms)
-            await refresh_upper_1m(exchange, all_watch_syms)
+            try:
+                await asyncio.wait_for(refresh_upper_1m(exchange, all_watch_syms), timeout=20.0)
+            except asyncio.TimeoutError:
+                logger.warning("refresh_upper_1m 超時跳過")
 
             # 3. 候選池開倉監控
             if not state["paused"] and not state["margin_pause"]:
