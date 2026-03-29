@@ -15,7 +15,6 @@ DEFAULT_CONFIG = {
     # === 開單設定 ===
     "capital_per_order_pct": 1.0,
     "time_stop_minutes": 100,
-    "reopen_cooldown_minutes": 10,     # 平倉後冷卻期（分鐘），期間不重複開同一幣            # 時間停損：第一槍後X分鐘市價出清（0=停用）
     "leverage": 30,                     # 槓桿倍數
     # notional = 帳戶餘額 * capital_per_order_pct% * leverage
 

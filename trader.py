@@ -475,10 +475,15 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
                 # 止損成交：取消所有殘留掛單（含隱形網格加碼單）再重掛
                 if close_reason == "SL_WS" and sl_order_id and str(order_id) == sl_order_id:
                     state["symbol_sl_triggered"].add(symbol)
+                    # 清除隱形網格（不再加碼）
+                    state["hidden_grids"].pop(symbol, None)
                     try:
                         await exchange.cancel_all_orders(symbol)
                     except Exception:
                         pass
+                    # 從候選池移除，避免止損後立即重新觸發開倉
+                    state["candidate_pool"] = [c for c in state["candidate_pool"] if c["symbol"] != symbol]
+                    state["triggered_symbols"].discard(symbol)
                     # 設定冷卻期，期間不再開倉
                     cooldown_min = cfg.get("sl_cooldown_minutes", 30)
                     if cooldown_min > 0:
@@ -786,16 +791,22 @@ async def place_tp_sl(exchange: BaseExchange, cfg: dict, symbol: str):
             else:
                 write_log("ERROR", f"第一段止盈掛單失敗", symbol=symbol, detail={"resp": r})
 
-    # 第二段：用持倉快取的實際數量，確保不留尾巴
-    pos_now = state["_binance_positions_cache"].get(symbol, {})
-    actual_qty = pos_now.get("qty", total_qty)
+    # 第二段：止盈後向幣安確認實際剩餘數量，確保不留尾巴
     if tier1_done:
+        # 第一段已成交：REST 確認當前持倉實際數量
+        pos_rest = await get_position_rest(exchange, symbol)
+        if pos_rest and pos_rest.get("qty", 0) > 0:
+            actual_qty = pos_rest["qty"]
+            state["_binance_positions_cache"][symbol] = pos_rest
+        else:
+            pos_now = state["_binance_positions_cache"].get(symbol, {})
+            actual_qty = pos_now.get("qty", total_qty)
         t2_qty = align_qty(actual_qty, filters["step_size"])
     else:
-        # 第一段還沒成交時，用總量減去第一段數量
-        t2_qty = align_qty(actual_qty - t1_qty, filters["step_size"])
+        # 第一段未成交：用總量 - 第一段對齊後數量
+        t2_qty = align_qty(total_qty - t1_qty, filters["step_size"])
         if t2_qty <= 0:
-            t2_qty = align_qty(actual_qty * (1 - tp1_qty_pct / 100), filters["step_size"])
+            t2_qty = align_qty(total_qty * (1 - tp1_qty_pct / 100), filters["step_size"])
     if t2_qty > 0:
         r = await exchange.place_limit_order(symbol, "BUY", t2_qty, tp2_price, reduce_only=True)
         if r and "orderId" in r:
@@ -1226,14 +1237,20 @@ async def reset_system(exchange: BaseExchange, cfg: dict) -> dict:
     state["symbol_setup_done"].clear()
     state["symbol_filters_cache"].clear()
     state["balance_cache"] = None
-    state["closing_symbols"].discard(symbol)
-    state["black_k_targets"].pop(symbol, None)
-    state["black_k_last_k_time"].pop(symbol, None)
-    state["symbol_sl_order"].pop(symbol, None)
-    state["symbol_open_time"].pop(symbol, None)
-    state["tp_tier1_done"].discard(symbol)
-    state["tp_tier2_guard"].pop(symbol, None)
-    state["symbol_sl_triggered"].discard(symbol)
+    state["closing_symbols"].clear()
+    state["black_k_targets"].clear()
+    state["black_k_last_k_time"].clear()
+    state["symbol_sl_order"].clear()
+    state["symbol_open_time"].clear()
+    state["tp_tier1_done"].clear()
+    state["tp_tier2_guard"].clear()
+    state["symbol_sl_triggered"].clear()
+    state["symbol_sell_count"].clear()
+    state["symbol_total_margin"].clear()
+    state["symbol_avg_entry"].clear()
+    state["symbol_realized_pnl"].clear()
+    state["pending_open"].clear()
+    state["sl_cooldown_until"].clear()
     state["margin_pause"] = False
     state["_binance_positions_cache"] = all_positions
 
@@ -1424,6 +1441,14 @@ async def trading_loop():
                 candidates = await scan_candidates(cfg, scanner_data=scanner_data)
                 state["candidate_pool"] = candidates
                 state["last_pool_scan"] = time.time()
+                # 候選池更新後，清除已不在池中的 triggered_symbols
+                # 否則舊幣種或暫時離開上軌的幣種永遠不會重新觸發開倉
+                new_pool_syms = {c["symbol"] for c in candidates}
+                open_syms_now = set(state["_binance_positions_cache"].keys())
+                state["triggered_symbols"] = {
+                    s for s in state["triggered_symbols"]
+                    if s in new_pool_syms or s in open_syms_now
+                }
 
             # 2.5 批次更新1分K上軌（候選池 + 現有持倉）
             all_watch_syms = list({c["symbol"] for c in state["candidate_pool"]} | open_syms)
