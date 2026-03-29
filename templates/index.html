@@ -1650,11 +1650,6 @@ async function resetAllData() {
     const data = await res.json();
     if (data.ok) { alert('所有數據已清空，重新開始！'); location.reload(); }
     else alert('清除失敗：' + (data.error || '未知錯誤'));
-  } catch(e) {
-        alert('清除失敗：' + e.message);
-      }
-    }
-  );
 }
 
 function exportLogs() {
