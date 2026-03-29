@@ -1341,8 +1341,12 @@ async def trading_loop():
     if _paper_exchange is not None:
         state["_paper_exchange"] = _paper_exchange  # 供 app.py 強制平倉使用
 
+    _loop_count = 0
     while True:
         try:
+            _loop_count += 1
+            if _loop_count % 10 == 1:
+                logger.info(f"主循環第{_loop_count}輪 pool={len(state['candidate_pool'])} ws={state['ws_price_connected']}")
             cfg = load_config()
             if not cfg.get("system_running", True):
                 await asyncio.sleep(5)
