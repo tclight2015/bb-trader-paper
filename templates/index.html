@@ -1641,15 +1641,15 @@ async function resetSystem() {
 }
 
 async function resetAllData() {
-    if (!await confirmAction(
-      '重置所有數據',
-      '將清空所有日誌、交易記錄和報表，無法復原！確定要繼續嗎？',
-      'danger'
-    )) return;
-    const res = await fetch('/api/reset_all_data', {method: 'POST'});
-    const data = await res.json();
-    if (data.ok) { alert('所有數據已清空，重新開始！'); location.reload(); }
-    else alert('清除失敗：' + (data.error || '未知錯誤'));
+    if (!confirm('將清空所有日誌、交易記錄和報表，無法復原！確定要繼續嗎？')) return;
+    try {
+        const res = await fetch('/api/reset_all_data', {method: 'POST'});
+        const data = await res.json();
+        if (data.ok) { alert('所有數據已清空，重新開始！'); location.reload(); }
+        else alert('清除失敗：' + (data.error || '未知錯誤'));
+    } catch(e) {
+        alert('清除失敗：' + e.message);
+    }
 }
 
 function exportLogs() {
