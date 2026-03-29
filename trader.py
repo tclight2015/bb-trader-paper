@@ -1348,7 +1348,7 @@ async def trading_loop():
         try:
             _loop_count += 1
             if _loop_count % 10 == 1:
-                logger.info(f"主循環第{_loop_count}輪 pool={len(state['candidate_pool'])} ws={state['ws_price_connected']}")
+                logger.info(f"主循環第{_loop_count}輪 pool={len(state['candidate_pool'])} ws={state['ws_price_connected']} paused={state['paused']} margin_pause={state['margin_pause']}")
             cfg = load_config()
             if not cfg.get("system_running", True):
                 await asyncio.sleep(5)
