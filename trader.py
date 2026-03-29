@@ -272,6 +272,8 @@ async def ws_price_stream(exchange: BaseExchange):
                                     if sym and price:
                                         state["price_cache"][sym] = float(price)
                                 state["price_cache_time"] = time.time()
+                            # 每次收到訊息後讓出 event loop，避免 trading_loop 被餓死
+                            await asyncio.sleep(0)
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                             break
         except Exception as e:
