@@ -470,6 +470,17 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
             fully_closed = not pos_after or pos_after.get("qty", 0) <= 0
 
             if fully_closed:
+                # 完全平倉前：若是止損單成交，先設冷卻期再清狀態
+                sl_order_id = state["symbol_sl_order"].get(symbol)
+                if sl_order_id and str(order_id) == sl_order_id:
+                    # 從候選池移除
+                    state["candidate_pool"] = [c for c in state["candidate_pool"] if c["symbol"] != symbol]
+                    state["triggered_symbols"].discard(symbol)
+                    # 設定冷卻期（在 _clear_symbol_state 清掉之前先存）
+                    cooldown_min = cfg.get("sl_cooldown_minutes", 30)
+                    if cooldown_min > 0:
+                        state["sl_cooldown_until"][symbol] = time.time() + cooldown_min * 60
+                        write_log("BLOCKED", f"止損完全平倉，冷卻 {cooldown_min} 分鐘", symbol=symbol)
                 # 完全平倉：記DB、清狀態
                 await handle_close_fill(exchange, cfg, symbol, fill_price, fill_qty)
             else:
