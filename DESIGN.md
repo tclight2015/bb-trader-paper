@@ -16,7 +16,13 @@
 | v4 | 多交易所抽象層（`exchanges/`）；ML補填+reward_score；漲幅暫停加碼（可恢復）；DB migrate | 見「已知設計遺漏」 |
 | v4.1–v4.47 | 詳見舊 DESIGN 版本紀錄 | — |
 | v4.57l | 三階停損簡化為單一止損（`place_sl`）；`next_funding_ms` 修正；篩選器診斷 log；`write_log("SCAN")` 移至 `run_scan()`；掃完立即同步候選池 | — |
-| v4.58 | **修復開倉無法觸發**：`triggered_symbols` 在候選池更新時清除舊幣種；**止損後**清除 `hidden_grids` + 從候選池移除 + 加入 `triggered_symbols` 解鎖；**TP2 qty** 改為 tier1 成交後 REST 確認實際剩餘數量；`reset_system` 修正 symbol 變數 bug（舊版只清最後一個 symbol）；`allowed_keys` 移除死碼欄位；`reopen_cooldown_minutes` 從 config 移除（未實作）；DESIGN.md 同步更新 | — |
+| v4.58 | 修復開倉無法觸發；止損後清 hidden_grids+移除候選池；TP2 qty 改 REST 確認；reset_system symbol bug；allowed_keys 死碼移除 | — |
+| v4.58-diag系列 | WS sleep(0)讓出CPU；掃描器改bb-scanner架構；config型別保護；background_scanner crash後重啟 | 診斷log尚未清除 |
+| v4.58-diag16 | `_clear_symbol_state`統一清理：平倉即踢出候選池+清upper_1m_cache | — |
+| v4.58-diag17 | extend_loss加`> 0`前置條件防負數誤判；config讀取加float()保護 | — |
+| v4.58-diag19 | extend_loss重寫：用`realized_pnl+unrealized_pnl/total_margin`計算虧損率；邏輯改為超過基本上限才檢查虧損 | — |
+| v4.58-diag20 | 日誌詳情按鈕修復：改用index傳參，不在HTML屬性塞JSON | — |
+| v4.58-diag21 | **PnL double count修復**：`close_symbol`自算`pnl_from_market`+WS累積值導致損益翻倍；改為優先用WS累積值，0時才用價差估算 | — |
 
 ---
 
@@ -200,6 +206,11 @@ sl_price = avg_entry × (1 + sl_loss_pct / leverage / 100)
 | **reset_system 只清最後一個 symbol** | **v4.58** | **for loop 結束後 symbol 變數殘留，.discard/.pop 只清了最後一個** |
 | **TP2 qty 精度尾巴** | **v4.58** | **tier1 成交後改用 REST 確認實際剩餘數量** |
 | **止損後 hidden_grids 殘留** | **v4.58** | **止損成交後立即 pop hidden_grids，不再加碼** |
+| 平倉後掛單/網格未清除 | diag15-16 | paper mode BUY成交後立即取消同幣SELL單；`_clear_symbol_state`統一清理 |
+| 完全平倉路徑無冷卻期 | diag15 | 完全平倉前判斷止損並設冷卻期，在`_clear_symbol_state`前執行 |
+| extend_loss誤判（負數/來源不準） | diag19 | 改用realized+unrealized PnL/total_margin計算，不依賴avg_entry |
+| 日誌詳情按鈕無法點開 | diag20 | HTML屬性塞JSON遇特殊字元爆掉，改用index傳參 |
+| PnL double count | diag21 | `close_symbol`自算+WS累積值相加導致翻倍，改為優先用WS累積值 |
 
 ---
 

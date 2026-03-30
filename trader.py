@@ -1084,10 +1084,15 @@ async def close_symbol(exchange: BaseExchange, cfg: dict, symbol: str, reason: s
                                              "close_price": actual_close_price,
                                              "slippage_pct": slippage_pct})
 
-        # 累計已實現損益（手動/強制平倉也要加總）
-        pnl_from_market = (avg_entry - actual_close_price) * total_qty
+        # 累計已實現損益
+        # WS的realized_pnl已累積在symbol_realized_pnl，不要重複計算
+        # 若WS尚未更新（accumulated=0），才用價差估算
         accumulated_pnl = state["symbol_realized_pnl"].get(symbol, 0)
-        total_pnl = accumulated_pnl + pnl_from_market
+        pnl_from_market = (avg_entry - actual_close_price) * total_qty
+        if accumulated_pnl != 0:
+            total_pnl = accumulated_pnl  # WS已有累積值，直接用
+        else:
+            total_pnl = pnl_from_market  # WS尚未更新，用價差估算
         roe_pct = (total_pnl / margin * 100) if margin > 0 else 0
         order_count = state["symbol_sell_count"].get(symbol, 1)
 
