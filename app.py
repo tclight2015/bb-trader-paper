@@ -42,17 +42,20 @@ async def fetch_json(session, url, params=None):
 async def get_all_symbols(session):
     data = await fetch_json(session, f"{BINANCE_BASE}/fapi/v1/exchangeInfo")
     if not data or "symbols" not in data:
-        return []
+        return [], set()
     symbols = []
+    hourly_symbols = set()
     for s in data["symbols"]:
         try:
             if (s.get("contractType") == "PERPETUAL" and
                     s.get("quoteAsset") == "USDT" and
                     s.get("status") == "TRADING"):
                 symbols.append(s["symbol"])
+                if s.get("fundingIntervalHours", 8) == 1:
+                    hourly_symbols.add(s["symbol"])
         except Exception:
             continue
-    return symbols
+    return symbols, hourly_symbols
 
 
 async def get_klines(session, symbol):
@@ -193,12 +196,20 @@ async def run_scan():
     results = []
     try:
         async with aiohttp.ClientSession() as session:
-            symbols = await get_all_symbols(session)
-            logger.info(f"掃描：取得 {len(symbols)} 個幣種")
+            # 步驟1：取得所有幣種 + hourly 資金費率幣種（單一 API call）
+            symbols, hourly_symbols = await get_all_symbols(session)
+            logger.info(f"掃描：取得 {len(symbols)} 個幣種，其中 {len(hourly_symbols)} 個為1H資金費率")
             if not symbols:
                 logger.error("get_all_symbols 回傳空，跳過本輪掃描")
                 return
+
+            # 排除1H資金費率幣種（避免頻繁收費）
+            symbols = [s for s in symbols if s not in hourly_symbols]
+            logger.info(f"排除1H資金費率後剩 {len(symbols)} 個幣種")
+
             cfg_scan = load_config()
+
+            # 步驟2：取得輔助資料
             try:
                 volume_map = await get_all_tickers_24h(session)
             except Exception:
@@ -212,11 +223,12 @@ async def run_scan():
             except Exception:
                 btc_1h = None
 
+            # 步驟3：批次掃描（仿 bb-scanner 架構）
             batch_size = 20
             for i in range(0, len(symbols), batch_size):
                 batch = symbols[i:i + batch_size]
                 tasks = [scan_symbol(session, sym, cfg_scan, volume_map, next_funding_map, funding_rate_map, btc_1h) for sym in batch]
-                batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+                batch_results = await asyncio.gather(*tasks)
                 for r in batch_results:
                     if r and not isinstance(r, Exception):
                         results.append(r)
@@ -225,6 +237,7 @@ async def run_scan():
         results.sort(key=lambda x: x["dist_to_upper_pct"])
         scanner_cache["data"] = results
         scanner_cache["last_updated"] = datetime.now(TZ_TAIPEI).strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(f"掃描完成，共 {len(results)} 個符合條件的幣種")
     except Exception as e:
         logger.error(f"掃描器錯誤: {e}", exc_info=True)
         return
