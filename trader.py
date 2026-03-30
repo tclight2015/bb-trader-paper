@@ -707,15 +707,15 @@ async def check_and_place_hidden_grids(exchange: BaseExchange, cfg: dict, symbol
     filled_count = state["symbol_sell_count"].get(symbol, 0)
     pending_grid_count = len(grids)  # 目前 hidden_grids 裡還有幾格待掛
     # 放寬條件：虧損在 extend_loss_pct 內可加碼到 extend_max_orders
-    extend_max = cfg.get("extend_orders_max", max_orders)
-    extend_loss = cfg.get("extend_loss_pct", 0)
+    extend_max = int(cfg.get("extend_orders_max") or max_orders)
+    extend_loss = float(cfg.get("extend_loss_pct") or 0)
     if extend_loss > 0:
         pos = state["_binance_positions_cache"].get(symbol, {})
-        avg_entry = pos.get("avg_entry", 0)
-        current_price = get_cached_price(symbol) or avg_entry
+        avg_entry = float(pos.get("avg_entry") or 0)
+        current_price = float(get_cached_price(symbol) or avg_entry)
         if avg_entry > 0:
-            loss_pct = (current_price - avg_entry) / avg_entry * 100  # SHORT：上漲=虧損
-            if loss_pct <= extend_loss:  # 虧損未達門檻，使用放寬上限
+            loss_pct = (current_price - avg_entry) / avg_entry * 100  # SHORT：上漲=虧損（正數）
+            if loss_pct > 0 and loss_pct <= extend_loss:  # 虧損為正且未達門檻才放寬
                 max_orders = max(max_orders, extend_max)
     current_count = filled_count
     if current_count >= max_orders:
@@ -950,18 +950,18 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
     max_orders = int(cfg.get("max_orders_per_symbol") or 20)
     current_count = state["symbol_sell_count"].get(symbol, 0)
     # 放寬條件：虧損在 extend_loss_pct 內可放寬到 extend_orders_max
-    extend_max = cfg.get("extend_orders_max", max_orders)
-    extend_loss = cfg.get("extend_loss_pct", 0)
+    extend_max = int(cfg.get("extend_orders_max") or max_orders)
+    extend_loss = float(cfg.get("extend_loss_pct") or 0)
     if extend_loss > 0:
         pos = state["_binance_positions_cache"].get(symbol, {})
-        avg_entry = pos.get("avg_entry", 0)
-        current_price = get_cached_price(symbol) or avg_entry
+        avg_entry = float(pos.get("avg_entry") or 0)
+        current_price = float(get_cached_price(symbol) or avg_entry)
         if avg_entry > 0:
-            loss_pct = (current_price - avg_entry) / avg_entry * 100
-            if loss_pct <= extend_loss:
+            loss_pct = (current_price - avg_entry) / avg_entry * 100  # SHORT：正數=虧損
+            if loss_pct > 0 and loss_pct <= extend_loss:  # 虧損為正且未達門檻才放寬
                 max_orders = max(max_orders, extend_max)
     if current_count >= max_orders:
-        write_log("BLOCKED", f"已達最大加碼次數({current_count}/{max_orders})", symbol=symbol)
+        write_log("BLOCKED", f"已達最大加碼次數({current_count}/{max_orders}) 虧損檢查 extend={extend_loss}%", symbol=symbol)
         return False
 
     balance = get_balance_cached()
