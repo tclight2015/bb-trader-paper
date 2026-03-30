@@ -1599,7 +1599,7 @@ async function loadLogs() {
         <td><span style="background:${color}15;color:${color};padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700;font-family:var(--mono)">${log.event_type}</span></td>
         <td style="font-family:var(--mono);font-weight:700">${sym}</td>
         <td style="font-size:12px;color:var(--text2)">${log.note || '—'}</td>
-        <td><button class="btn btn-ghost btn-xs" onclick="showLogDetail(${i}, ${JSON.stringify(JSON.stringify(log))})">▶</button></td>
+        <td><button class="btn btn-ghost btn-xs" onclick="showLogDetail(${i})">▶</button></td>
       </tr>`;
     }).join('');
 
@@ -1608,9 +1608,13 @@ async function loadLogs() {
   } catch(e) { console.error(e); }
 }
 
-function showLogDetail(i, logJson) {
-  const log = JSON.parse(logJson);
-  let detail = log.detail ? JSON.parse(log.detail) : {};
+function showLogDetail(i) {
+  const log = window._currentLogs[i];
+  if (!log) return;
+  let detail = log.detail;
+  if (typeof detail === 'string') {
+    try { detail = JSON.parse(detail); } catch(e) {}
+  }
   const content = JSON.stringify({
     time: log.time,
     event: log.event_type,

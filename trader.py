@@ -709,17 +709,27 @@ async def check_and_place_hidden_grids(exchange: BaseExchange, cfg: dict, symbol
     # 放寬條件：虧損在 extend_loss_pct 內可加碼到 extend_max_orders
     extend_max = int(cfg.get("extend_orders_max") or max_orders)
     extend_loss = float(cfg.get("extend_loss_pct") or 0)
-    if extend_loss > 0:
-        pos = state["_binance_positions_cache"].get(symbol, {})
-        avg_entry = float(pos.get("avg_entry") or 0)
-        current_price = float(get_cached_price(symbol) or avg_entry)
-        if avg_entry > 0:
-            loss_pct = (current_price - avg_entry) / avg_entry * 100  # SHORT：上漲=虧損（正數）
-            if loss_pct > 0 and loss_pct <= extend_loss:  # 虧損為正且未達門檻才放寬
-                max_orders = max(max_orders, extend_max)
     current_count = filled_count
     if current_count >= max_orders:
-        return
+        # 超過基本上限：檢查是否在放寬範圍內
+        if extend_loss > 0 and current_count < extend_max:
+            # 用已實現損益計算當前虧損率
+            total_margin = float(state["symbol_total_margin"].get(symbol) or 0)
+            realized_pnl = float(state["symbol_realized_pnl"].get(symbol) or 0)
+            # 加上浮動損益（未平倉的虧損）
+            pos = state["_binance_positions_cache"].get(symbol, {})
+            unrealized = float(pos.get("unrealized_pnl") or 0)
+            total_pnl = realized_pnl + unrealized
+            if total_margin > 0:
+                loss_pct = -total_pnl / total_margin * 100  # 虧損為正數
+                if loss_pct <= extend_loss:
+                    pass  # 虧損未達門檻，允許繼續加碼
+                else:
+                    return  # 虧損超過門檻，擋住
+            else:
+                return
+        else:
+            return
 
     notional = get_notional(cfg, balance["total"])
     # 已成交筆數超過門檻後放大每單保證金
@@ -952,17 +962,26 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
     # 放寬條件：虧損在 extend_loss_pct 內可放寬到 extend_orders_max
     extend_max = int(cfg.get("extend_orders_max") or max_orders)
     extend_loss = float(cfg.get("extend_loss_pct") or 0)
-    if extend_loss > 0:
-        pos = state["_binance_positions_cache"].get(symbol, {})
-        avg_entry = float(pos.get("avg_entry") or 0)
-        current_price = float(get_cached_price(symbol) or avg_entry)
-        if avg_entry > 0:
-            loss_pct = (current_price - avg_entry) / avg_entry * 100  # SHORT：正數=虧損
-            if loss_pct > 0 and loss_pct <= extend_loss:  # 虧損為正且未達門檻才放寬
-                max_orders = max(max_orders, extend_max)
     if current_count >= max_orders:
-        write_log("BLOCKED", f"已達最大加碼次數({current_count}/{max_orders}) 虧損檢查 extend={extend_loss}%", symbol=symbol)
-        return False
+        # 超過基本上限：檢查是否在放寬範圍內
+        if extend_loss > 0 and current_count < extend_max:
+            total_margin = float(state["symbol_total_margin"].get(symbol) or 0)
+            realized_pnl = float(state["symbol_realized_pnl"].get(symbol) or 0)
+            pos = state["_binance_positions_cache"].get(symbol, {})
+            unrealized = float(pos.get("unrealized_pnl") or 0)
+            total_pnl = realized_pnl + unrealized
+            if total_margin > 0:
+                loss_pct = -total_pnl / total_margin * 100  # 虧損為正數
+                if loss_pct > extend_loss:
+                    write_log("BLOCKED", f"已達加碼上限({current_count}/{max_orders}) 虧損{loss_pct:.1f}%超過{extend_loss}%門檻", symbol=symbol)
+                    return False
+                # 虧損未達門檻，允許繼續加碼（不 return）
+            else:
+                write_log("BLOCKED", f"已達最大加碼次數({current_count}/{max_orders})", symbol=symbol)
+                return False
+        else:
+            write_log("BLOCKED", f"已達最大加碼次數({current_count}/{extend_max})", symbol=symbol)
+            return False
 
     balance = get_balance_cached()
     if not balance:

@@ -344,3 +344,14 @@ base = roe_pct
 1. 新增 `exchanges/xxx.py`，繼承 `BaseExchange`，實作所有 `@abstractmethod`
 2. 在 `trader.py: get_exchange()` 加入對應 `elif`
 3. `config.py` 設定 `"exchange": "xxx"` 即可切換
+ws_price_stream需要`await asyncio.sleep(0)`讓出CPU否則trading_loop會被餓死
+- Wipe Volume後config重建，需重新在設定頁儲存所有參數
+- 正式版切換：`paper_trading: false` + 填入真實API key
+
+---
+
+## 新增交易所步驟
+
+1. 新增`exchanges/xxx.py`，繼承`BaseExchange`
+2. 在`trader.py: get_exchange()`加入對應elif
+3. `config.py`設定`"exchange": "xxx"`即可切換
