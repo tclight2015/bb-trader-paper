@@ -129,7 +129,7 @@ async def scan_symbol(session, symbol, cfg=None, volume_map=None, next_funding_m
 
     volume_usdt = (volume_map or {}).get(symbol, 0)
     if cfg:
-        min_vol = cfg.get("min_volume_usdt", 0)
+        min_vol = float(cfg.get("min_volume_usdt") or 0)
         if min_vol > 0 and volume_usdt > 0 and volume_usdt < min_vol:
             return None
 
@@ -143,7 +143,7 @@ async def scan_symbol(session, symbol, cfg=None, volume_map=None, next_funding_m
         return None
 
     band_width_pct = (upper - middle) / middle * 100
-    min_band = cfg.get("min_band_width_pct", 1.0) if cfg else 1.0
+    min_band = float(cfg.get("min_band_width_pct") or 1.0) if cfg else 1.0
     if band_width_pct < min_band:
         return None
 
@@ -234,6 +234,7 @@ async def run_scan():
                         results.append(r)
                 await asyncio.sleep(0.15)
 
+        results = [r for r in results if r.get("dist_to_upper_pct") is not None]
         results.sort(key=lambda x: x["dist_to_upper_pct"])
         scanner_cache["data"] = results
         scanner_cache["last_updated"] = datetime.now(TZ_TAIPEI).strftime("%Y-%m-%d %H:%M:%S")
@@ -249,9 +250,9 @@ async def run_scan():
     # 同步給交易引擎（候選池）
     from trader import state as trader_state
     cfg = load_config()
-    max_dist = cfg.get("max_dist_to_upper_pct", 1.0)
-    pre_scan_size = cfg.get("pre_scan_size", 30)
-    pool_size = cfg.get("candidate_pool_size", 10)
+    max_dist = float(cfg.get("max_dist_to_upper_pct") or 1.0)
+    pre_scan_size = int(cfg.get("pre_scan_size") or 30)
+    pool_size = int(cfg.get("candidate_pool_size") or 10)
 
     # 步驟1：距離15分K上軌硬性過濾，取前 pre_scan_size 個，排除黑名單
     blacklist = set(cfg.get("blacklist", []))
@@ -261,11 +262,11 @@ async def run_scan():
     top_15m = filtered[:pre_scan_size]
 
     # 步驟2：距離1H上軌硬性過濾
-    max_dist_1h = cfg.get("max_dist_1h_upper_pct", 0.5)
+    max_dist_1h = float(cfg.get("max_dist_1h_upper_pct") or 0.5)
     top_15m = [r for r in top_15m if r.get("dist_1h_pct") is not None and r.get("dist_1h_pct", 999) <= max_dist_1h]
 
     # 步驟3：硬性條件，前高最大超出幅度必須 >= prev_high_min_excess_pct（預設1.0%）
-    min_excess = cfg.get("prev_high_min_excess_pct", 1.0)
+    min_excess = float(cfg.get("prev_high_min_excess_pct") or 1.0)
     with_prev_high = [r for r in top_15m if r.get("prev_high_score", 0) >= min_excess]
     with_prev_high.sort(key=lambda x: x.get("prev_high_score", 0), reverse=True)
 
