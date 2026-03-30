@@ -470,14 +470,15 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
             fully_closed = not pos_after or pos_after.get("qty", 0) <= 0
 
             if fully_closed:
-                # 完全平倉前：若是止損單成交，先設冷卻期再清狀態
+                # 完全平倉前：判斷是否為止損（close_price > avg_entry = SHORT倉虧損）
+                avg_entry_now = state["symbol_avg_entry"].get(symbol) or                     state["_binance_positions_cache"].get(symbol, {}).get("avg_entry", 0)
                 sl_order_id = state["symbol_sl_order"].get(symbol)
-                if sl_order_id and str(order_id) == sl_order_id:
-                    # 從候選池移除
+                is_sl = (sl_order_id and str(order_id) == sl_order_id) or                         (avg_entry_now > 0 and fill_price > avg_entry_now)
+                if is_sl:
+                    # 從候選池移除，設冷卻期（在 _clear_symbol_state 清掉之前先存）
                     state["candidate_pool"] = [c for c in state["candidate_pool"] if c["symbol"] != symbol]
                     state["triggered_symbols"].discard(symbol)
-                    # 設定冷卻期（在 _clear_symbol_state 清掉之前先存）
-                    cooldown_min = cfg.get("sl_cooldown_minutes", 30)
+                    cooldown_min = int(cfg.get("sl_cooldown_minutes") or 30)
                     if cooldown_min > 0:
                         state["sl_cooldown_until"][symbol] = time.time() + cooldown_min * 60
                         write_log("BLOCKED", f"止損完全平倉，冷卻 {cooldown_min} 分鐘", symbol=symbol)
@@ -520,7 +521,7 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
                     state["candidate_pool"] = [c for c in state["candidate_pool"] if c["symbol"] != symbol]
                     state["triggered_symbols"].discard(symbol)
                     # 設定冷卻期，期間不再開倉
-                    cooldown_min = cfg.get("sl_cooldown_minutes", 30)
+                    cooldown_min = int(cfg.get("sl_cooldown_minutes") or 30)
                     if cooldown_min > 0:
                         state["sl_cooldown_until"][symbol] = time.time() + cooldown_min * 60
                         write_log("BLOCKED", f"止損冷卻 {cooldown_min} 分鐘，暫停開倉", symbol=symbol)
@@ -702,7 +703,7 @@ async def check_and_place_hidden_grids(exchange: BaseExchange, cfg: dict, symbol
         return
 
     # 檢查單幣加碼次數上限（已成交 + 已掛出未成交網格數）
-    max_orders = cfg.get("max_orders_per_symbol", 20)
+    max_orders = int(cfg.get("max_orders_per_symbol") or 20)
     filled_count = state["symbol_sell_count"].get(symbol, 0)
     pending_grid_count = len(grids)  # 目前 hidden_grids 裡還有幾格待掛
     # 放寬條件：虧損在 extend_loss_pct 內可加碼到 extend_max_orders
@@ -785,11 +786,11 @@ async def place_tp_sl(exchange: BaseExchange, cfg: dict, symbol: str):
 
     avg_entry = pos["avg_entry"]
     total_qty = pos["qty"]
-    leverage = cfg.get("leverage", 30)
+    leverage = int(cfg.get("leverage") or 30)
 
-    tp1_roi = cfg.get("tp_tier1_roi", 10.0)
-    tp1_qty_pct = cfg.get("tp_tier1_qty", 50.0)
-    tp2_roi = cfg.get("tp_tier2_roi", 20.0)
+    tp1_roi = float(cfg.get("tp_tier1_roi") or 10.0)
+    tp1_qty_pct = float(cfg.get("tp_tier1_qty") or 50.0)
+    tp2_roi = float(cfg.get("tp_tier2_roi") or 20.0)
 
     tp1_price_raw = calc_tp_tier_price(avg_entry, tp1_roi, leverage)
     tp2_price_raw = calc_tp_tier_price(avg_entry, tp2_roi, leverage)
@@ -868,8 +869,8 @@ async def place_sl(exchange: BaseExchange, cfg: dict, symbol: str):
     if total_qty <= 0 or avg_entry <= 0 or total_margin <= 0:
         return
 
-    leverage = cfg.get("leverage", 30)
-    sl_loss_pct = cfg.get("sl_loss_pct", 40.0)
+    leverage = int(cfg.get("leverage") or 30)
+    sl_loss_pct = float(cfg.get("sl_loss_pct") or 40.0)
 
     # 停損價 = 均入價 × (1 + sl_loss_pct / leverage / 100)
     sl_price_raw = avg_entry * (1 + sl_loss_pct / leverage / 100)
@@ -946,7 +947,7 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
         return False
 
     # 檢查單幣加碼次數上限
-    max_orders = cfg.get("max_orders_per_symbol", 20)
+    max_orders = int(cfg.get("max_orders_per_symbol") or 20)
     current_count = state["symbol_sell_count"].get(symbol, 0)
     # 放寬條件：虧損在 extend_loss_pct 內可放寬到 extend_orders_max
     extend_max = cfg.get("extend_orders_max", max_orders)
@@ -1113,7 +1114,7 @@ def _clear_symbol_state(symbol: str):
     state["triggered_symbols"].discard(symbol)
     state["symbol_open_paused"].discard(symbol)
     state["pending_open"].discard(symbol)
-    state["symbol_last_close_time"][symbol] = time.time()  # 記錄平倉時間供冷卻期使用
+    state["symbol_last_close_time"][symbol] = time.time()
     state["symbol_sell_count"].pop(symbol, None)
     state["symbol_total_margin"].pop(symbol, None)
     state["symbol_avg_entry"].pop(symbol, None)
@@ -1127,6 +1128,9 @@ def _clear_symbol_state(symbol: str):
     state["tp_tier2_guard"].pop(symbol, None)
     state["symbol_sl_triggered"].discard(symbol)
     state["margin_pause"] = False
+    # 平倉即踢出候選池，所有資料歸零，等下次掃描重新進入
+    state["candidate_pool"] = [c for c in state["candidate_pool"] if c["symbol"] != symbol]
+    state["upper_1m_cache"].pop(symbol, None)
 
 
 # ===== 黑K偵測 =====
@@ -1201,7 +1205,7 @@ async def check_position_protection(exchange: BaseExchange, cfg: dict, symbol: s
         return
 
     # === 層1：漲幅暫停加碼（可恢復）===
-    pause_rise_pct = cfg.get("pause_open_rise_pct", 2.0)
+    pause_rise_pct = float(cfg.get("pause_open_rise_pct") or 999.0)
     rise_pct = (current_price - avg_entry) / avg_entry * 100
 
     if rise_pct >= pause_rise_pct:
@@ -1395,7 +1399,7 @@ async def trading_loop():
             for symbol in list(open_syms):
                 try:
                     # 時間停損檢查
-                    time_stop = cfg.get("time_stop_minutes", 0)
+                    time_stop = int(cfg.get("time_stop_minutes") or 0)
                     if time_stop > 0:
                         open_time_str = state["symbol_open_time"].get(symbol)
                         if open_time_str:

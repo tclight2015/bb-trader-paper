@@ -436,11 +436,14 @@ class PaperExchange(BaseExchange):
                     order_id, symbol, side, qty, current_price,
                     order.get("reduceOnly", False)
                 )
-                # 止損單成交後，立即取消同幣種所有其他掛單，防止同輪隱形網格繼續成交
-                intent = order.get("intent", "tp")
-                if side == "BUY" and intent == "sl":
+                # 任何 BUY 平倉單成交後，立即取消同幣種所有 SELL 掛單
+                # 防止同一輪隱形網格繼續成交造成重複開倉
+                if side == "BUY" and order.get("reduceOnly", False):
                     for oid in list(self._orders.keys()):
                         o = self._orders.get(oid)
-                        if o and o["symbol"] == symbol and o["status"] == "NEW":
+                        if o and o["symbol"] == symbol and o["status"] == "NEW" and o["side"] == "SELL":
                             o["status"] = "CANCELED"
-                    break  # 止損後跳出本輪，不再處理其他掛單
+                # 止損單成交後跳出本輪
+                intent = order.get("intent", "tp")
+                if side == "BUY" and intent == "sl":
+                    break
