@@ -19,11 +19,14 @@ TZ_TAIPEI = timezone(timedelta(hours=8))
 import os
 _DB_VOLUME = "/data/trading.db"
 _DB_LOCAL  = "trading.db"
-DB_FILE = _DB_VOLUME if os.path.isdir("/data") else _DB_LOCAL
 
+def _get_db_file():
+    return _DB_VOLUME if os.path.isdir("/data") else _DB_LOCAL
+
+# DB_FILE：每次呼叫 _get_db_file() 取得，避免 import 時 Volume 尚未掛載就固定路徑
 
 def get_conn():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn = sqlite3.connect(_get_db_file(), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -79,6 +82,8 @@ def init_db():
             prev_high_score REAL,
             funding_rate REAL,
             btc_change_1h REAL,
+            upper_1m_slope REAL,
+            price_vs_upper_1m_pct REAL,
             price_15m_after REAL,
             price_30m_after REAL,
             price_1h_after REAL,
@@ -129,6 +134,10 @@ def _migrate(c):
         ("trade_history",   "dist_1h_pct",  "REAL"),
         ("trade_history",   "prev_high_score", "REAL"),
         ("trade_history",   "volume_usdt",  "REAL"),
+        ("trade_history",   "upper_1m_slope", "REAL"),
+        ("trade_history",   "price_vs_upper_1m_pct", "REAL"),
+        ("trade_analytics", "upper_1m_slope", "REAL"),
+        ("trade_analytics", "price_vs_upper_1m_pct", "REAL"),
         ("trade_analytics", "exchange",     "TEXT DEFAULT 'binance'"),
         ("trade_analytics", "hold_minutes", "REAL"),
         ("trade_analytics", "funding_rate", "REAL"),
@@ -162,15 +171,16 @@ def record_trade_close(symbol, avg_entry, close_price, total_qty,
         (symbol, exchange, open_time, close_time, avg_entry_price, close_price,
          total_quantity, total_margin, total_pnl, roe_pct, close_reason, order_count,
          mark_price, slippage_pct, upper_15m, dist_15m_pct, dist_1h_pct,
-         prev_high_score, volume_usdt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         prev_high_score, volume_usdt, upper_1m_slope, price_vs_upper_1m_pct)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (symbol, exchange, open_time or now, now,
           avg_entry, close_price, total_qty,
           total_margin, total_pnl, roe_pct, close_reason, order_count,
           mark_price, slippage_pct,
           snap.get("upper_15m"), snap.get("dist_15m_pct", snap.get("dist_15m")),
           snap.get("dist_1h_pct", snap.get("dist_1h")),
-          snap.get("prev_high_score"), snap.get("volume_usdt")))
+          snap.get("prev_high_score"), snap.get("volume_usdt"),
+          snap.get("upper_1m_slope"), snap.get("price_vs_upper_1m_pct")))
     conn.commit()
     conn.close()
 
@@ -198,8 +208,9 @@ def add_trade_analytics(symbol, avg_entry, close_price, total_qty,
          avg_entry_price, close_price, total_qty,
          total_margin, total_pnl, roe_pct, close_reason,
          upper_15m, dist_15m_pct, dist_1h_pct, band_width_pct,
-         volume_usdt, prev_high_score, funding_rate, btc_change_1h, extra_data)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         volume_usdt, prev_high_score, funding_rate, btc_change_1h,
+         upper_1m_slope, price_vs_upper_1m_pct, extra_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (symbol, exchange, now, hold_minutes,
           avg_entry, close_price, total_qty,
           total_margin, total_pnl, roe_pct, close_reason,
@@ -211,6 +222,8 @@ def add_trade_analytics(symbol, avg_entry, close_price, total_qty,
           snap.get("prev_high_score", 0),
           snap.get("funding_rate"),
           snap.get("btc_change_1h"),
+          snap.get("upper_1m_slope"),
+          snap.get("price_vs_upper_1m_pct"),
           json.dumps(snap, ensure_ascii=False))).lastrowid
     conn.commit()
     conn.close()

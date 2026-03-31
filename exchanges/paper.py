@@ -352,7 +352,8 @@ class PaperExchange(BaseExchange):
 
                 self._balance["total"] = round(self._balance["total"] + realized_pnl, 4)
 
-                if new_qty <= 0:
+                # 精度容差：殘留量極小（< 1 個最小單位）視為完全平倉
+                if new_qty <= 0 or new_qty < 0.0001 * old_qty:
                     self._positions.pop(symbol, None)
                 else:
                     pos["positionAmt"] = str(-new_qty)

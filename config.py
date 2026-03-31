@@ -4,7 +4,8 @@ import os
 # Railway Volume 掛載在 /data，部署不會覆蓋；本地開發 fallback 到當前目錄
 _VOLUME_PATH = "/data/trading_config.json"
 _LOCAL_PATH = "trading_config.json"
-CONFIG_FILE = _VOLUME_PATH if os.path.isdir("/data") else _LOCAL_PATH
+def _get_config_file():
+    return _VOLUME_PATH if os.path.isdir("/data") else _LOCAL_PATH
 
 DEFAULT_CONFIG = {
     # === 帳戶設定（從環境變數讀取）===
@@ -53,6 +54,7 @@ DEFAULT_CONFIG = {
     # === 掃描篩選條件 ===
     "funding_block_minutes": 70,  # 距資金費率結算X分鐘內不開新倉（0=停用）
     "min_band_width_pct": 1.0, # BB帶寬最小值%（(上軌-中軌)/中軌），過濾波動太小的幣
+    "max_band_width_pct": 5.0, # BB帶寬最大值%，過濾波動太劇烈的幣（0=停用）
     "max_dist_to_upper_pct": 1.0,      # 距15分K上軌最大距離%（候選池篩選條件）
     "max_dist_1h_upper_pct": 2.0,      # 距1H上軌最大距離%（候選池篩選條件）
     "prev_high_min_excess_pct": 1.0,   # 前高保護：前5根中至少一根高點須超過現價X%
@@ -71,13 +73,14 @@ DEFAULT_CONFIG = {
     # === 系統設定 ===
     "system_running": True,
     "candidate_pool_refresh_min": 3,   # 候選池更新間隔（分鐘）
-    "paper_trading": True,             # Paper mode：本地模擬下單，不打幣安
+    "paper_trading": True,            # Paper mode：本地模擬下單，不打幣安
 }
 
 
 def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
+    config_file = _get_config_file()
+    if os.path.exists(config_file):
+        with open(config_file, "r") as f:
             saved = json.load(f)
         cfg = DEFAULT_CONFIG.copy()
         cfg.update(saved)
@@ -99,7 +102,7 @@ def save_config(cfg):
     # 不存 api_key/secret 到檔案（從環境變數讀）
     save_data = {k: v for k, v in cfg.items()
                  if k not in ["api_key", "api_secret"]}
-    with open(CONFIG_FILE, "w") as f:
+    with open(_get_config_file(), "w") as f:
         json.dump(save_data, f, indent=2, ensure_ascii=False)
 
 

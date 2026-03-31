@@ -51,7 +51,8 @@ state = {
     "closing_symbols": set(),   # 正在由 close_symbol 處理平倉的幣種（防止 handle_close_fill 重複寫DB）
     "black_k_targets": {},      # symbol -> target_price（黑K目標掛單價）
     "black_k_last_k_time": {},  # symbol -> k_open_time（防同一根K棒重複觸發）
-    "symbol_sl_order": {},      # symbol -> order_id（單一止損限價單）
+    "symbol_sl_order": {},      # symbol -> order_id（止損限價單）
+    "symbol_sl_stop_order": {}, # symbol -> order_id（止損 Stop-Market 保底單）
     "symbol_open_time": {},     # symbol -> 第一筆開倉時間（ISO string）
     "tp_tier1_done": set(),      # 第一段止盈已成交的幣種
     "tp_tier2_guard": {},        # symbol -> 第二段追蹤保底價（=第一段目標價）
@@ -473,7 +474,10 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
                 # 完全平倉前：判斷是否為止損（close_price > avg_entry = SHORT倉虧損）
                 avg_entry_now = state["symbol_avg_entry"].get(symbol) or                     state["_binance_positions_cache"].get(symbol, {}).get("avg_entry", 0)
                 sl_order_id = state["symbol_sl_order"].get(symbol)
-                is_sl = (sl_order_id and str(order_id) == sl_order_id) or                         (avg_entry_now > 0 and fill_price > avg_entry_now)
+                sl_stop_order_id = state["symbol_sl_stop_order"].get(symbol)
+                is_sl = (sl_order_id and str(order_id) == sl_order_id) or \
+                        (sl_stop_order_id and str(order_id) == sl_stop_order_id) or \
+                        (avg_entry_now > 0 and fill_price > avg_entry_now)
                 if is_sl:
                     # 從候選池移除，設冷卻期（在 _clear_symbol_state 清掉之前先存）
                     state["candidate_pool"] = [c for c in state["candidate_pool"] if c["symbol"] != symbol]
@@ -487,9 +491,11 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
             else:
                 # 部分平倉：判斷原因，更新狀態，不記DB（只在完全平倉時才記）
                 sl_order_id = state["symbol_sl_order"].get(symbol)
+                sl_stop_order_id = state["symbol_sl_stop_order"].get(symbol)
                 tp1_order_id = state["tp_sl_orders"].get(symbol, {}).get("tp1_limit")
                 tp2_order_id = state["tp_sl_orders"].get(symbol, {}).get("tp2_limit")
-                if sl_order_id and str(order_id) == sl_order_id:
+                if (sl_order_id and str(order_id) == sl_order_id) or \
+                   (sl_stop_order_id and str(order_id) == sl_stop_order_id):
                     close_reason = "SL_WS"
                 elif str(order_id) in [tp1_order_id, tp2_order_id]:
                     close_reason = "TP_WS"
@@ -509,7 +515,11 @@ async def handle_user_event(data: dict, cfg: dict, exchange: BaseExchange):
                     write_log("TP_TIER", f"第一段止盈成交 @ {fill_price}，重掛第二段", symbol=symbol)
 
                 # 止損成交：取消所有殘留掛單（含隱形網格加碼單）再重掛
-                if close_reason == "SL_WS" and sl_order_id and str(order_id) == sl_order_id:
+                is_sl_fill = close_reason == "SL_WS" and (
+                    (sl_order_id and str(order_id) == sl_order_id) or
+                    (sl_stop_order_id and str(order_id) == sl_stop_order_id)
+                )
+                if is_sl_fill:
                     state["symbol_sl_triggered"].add(symbol)
                     # 清除隱形網格（不再加碼）
                     state["hidden_grids"].pop(symbol, None)
@@ -871,7 +881,7 @@ async def place_tp_sl(exchange: BaseExchange, cfg: dict, symbol: str):
 
 
 async def place_sl(exchange: BaseExchange, cfg: dict, symbol: str):
-    """掛單一止損限價單，每次開倉/加碼後重置"""
+    """掛止損限價單 + Stop-Market 保底單（雙重保護）"""
     pos = state["_binance_positions_cache"].get(symbol, {})
     total_qty = pos.get("qty", 0)
     avg_entry = state["symbol_avg_entry"].get(symbol) or pos.get("avg_entry", 0)
@@ -882,19 +892,22 @@ async def place_sl(exchange: BaseExchange, cfg: dict, symbol: str):
     leverage = int(cfg.get("leverage") or 30)
     sl_loss_pct = float(cfg.get("sl_loss_pct") or 40.0)
 
-    # 停損價 = 均入價 × (1 + sl_loss_pct / leverage / 100)
+    # 限價止損價 = 均入價 × (1 + sl_loss_pct / leverage / 100)
     sl_price_raw = avg_entry * (1 + sl_loss_pct / leverage / 100)
+    # Stop-Market 保底價 = 限價止損價再往上 0.5%（確保極端行情一定成交）
+    sl_stop_raw = sl_price_raw * 1.005
 
     filters = await get_filters_cached(exchange, symbol)
     if not filters:
         return
 
     sl_price = align_price(sl_price_raw, filters["tick_size"])
+    sl_stop = align_price(sl_stop_raw, filters["tick_size"])
     close_qty = align_qty(total_qty, filters["step_size"])
     if close_qty <= 0:
         return
 
-    # 取消舊止損單
+    # 取消舊止損限價單
     old_oid = state["symbol_sl_order"].get(symbol)
     if old_oid:
         try:
@@ -903,6 +916,16 @@ async def place_sl(exchange: BaseExchange, cfg: dict, symbol: str):
             pass
         state["symbol_sl_order"].pop(symbol, None)
 
+    # 取消舊 Stop-Market 保底單
+    old_stop_oid = state["symbol_sl_stop_order"].get(symbol)
+    if old_stop_oid:
+        try:
+            await exchange.cancel_order(symbol, old_stop_oid)
+        except Exception:
+            pass
+        state["symbol_sl_stop_order"].pop(symbol, None)
+
+    # 掛限價止損單
     r = await exchange.place_limit_order(symbol, "BUY", close_qty, sl_price, reduce_only=True)
     if r and "orderId" in r:
         state["symbol_sl_order"][symbol] = str(r["orderId"])
@@ -910,7 +933,17 @@ async def place_sl(exchange: BaseExchange, cfg: dict, symbol: str):
         write_log("SL_ORDER", f"止損單掛出 @ {sl_price} (虧損{sl_loss_pct}%本金)",
                   symbol=symbol, detail={"sl_price": sl_price, "qty": close_qty, "avg_entry": avg_entry})
     else:
-        write_log("ERROR", f"止損掛單失敗", symbol=symbol, detail={"resp": r})
+        write_log("ERROR", f"止損限價掛單失敗", symbol=symbol, detail={"resp": r})
+
+    # 掛 Stop-Market 保底單（paper mode 跳過，binance 專用）
+    from exchanges.paper import PaperExchange
+    if not isinstance(exchange, PaperExchange):
+        r2 = await exchange.place_stop_market_order(symbol, "BUY", close_qty, sl_stop, reduce_only=True)
+        if r2 and "orderId" in r2:
+            state["symbol_sl_stop_order"][symbol] = str(r2["orderId"])
+            logger.info(f"🔴 止損保底掛出 {symbol} stopPrice={sl_stop}")
+        else:
+            write_log("WARN", f"止損Stop-Market保底掛單失敗", symbol=symbol, detail={"resp": r2})
 
 
 # ===== 開倉 =====
@@ -1026,18 +1059,24 @@ async def try_open_position(exchange: BaseExchange, cfg: dict, symbol: str,
     if symbol not in state["_binance_positions_cache"]:
         state["pending_open"].add(symbol)
     candidate_info = next((c for c in state["candidate_pool"] if c["symbol"] == symbol), {})
+    upper_1m_slope = get_upper_1m_slope(symbol, cfg.get("black_k_upper_slope_lookback", 5))
+    upper_1m_now = get_upper_1m(symbol)
+    price_vs_upper_1m_pct = round((price - upper_1m_now) / upper_1m_now * 100, 4) if upper_1m_now else None
     write_log("ORDER", f"掛限價空單 @ {price} [{trigger_type}]", symbol=symbol,
               detail={"order_id": str(result["orderId"]), "price": price, "qty": qty,
                       "notional": notional, "trigger_type": trigger_type,
                       "account_balance": total,
                       "market_snapshot": {
                           "upper_15m": candidate_info.get("upper_15m", 0),
-                          "dist_15m_pct": candidate_info.get("dist_15m", 0),
-                          "dist_1h_pct": candidate_info.get("dist_1h", 0),
+                          "dist_15m_pct": candidate_info.get("dist_to_upper_pct", 0),
+                          "dist_1h_pct": candidate_info.get("dist_1h_pct", 0),
                           "band_width_pct": candidate_info.get("band_width_pct", 0),
                           "volume_usdt": candidate_info.get("volume_usdt", 0),
                           "funding_rate": candidate_info.get("funding_rate"),
                           "btc_change_1h": candidate_info.get("btc_change_1h"),
+                          "prev_high_score": candidate_info.get("prev_high_score", 0),
+                          "upper_1m_slope": upper_1m_slope,
+                          "price_vs_upper_1m_pct": price_vs_upper_1m_pct,
                       }})
     return True
 
@@ -1147,6 +1186,7 @@ def _clear_symbol_state(symbol: str):
     state["black_k_targets"].pop(symbol, None)
     state["black_k_last_k_time"].pop(symbol, None)
     state["symbol_sl_order"].pop(symbol, None)
+    state["symbol_sl_stop_order"].pop(symbol, None)
     state["symbol_open_time"].pop(symbol, None)
     state["tp_tier1_done"].discard(symbol)
     state["tp_tier2_guard"].pop(symbol, None)
@@ -1304,6 +1344,7 @@ async def reset_system(exchange: BaseExchange, cfg: dict) -> dict:
     state["black_k_targets"].clear()
     state["black_k_last_k_time"].clear()
     state["symbol_sl_order"].clear()
+    state["symbol_sl_stop_order"].clear()
     state["symbol_open_time"].clear()
     state["tp_tier1_done"].clear()
     state["tp_tier2_guard"].clear()

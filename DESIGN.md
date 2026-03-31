@@ -23,6 +23,9 @@
 | v4.58-diag19 | extend_loss重寫：用`realized_pnl+unrealized_pnl/total_margin`計算虧損率；邏輯改為超過基本上限才檢查虧損 | — |
 | v4.58-diag20 | 日誌詳情按鈕修復：改用index傳參，不在HTML屬性塞JSON | — |
 | v4.58-diag21 | **PnL double count修復**：`close_symbol`自算`pnl_from_market`+WS累積值導致損益翻倍；改為優先用WS累積值，0時才用價差估算 | — |
+| v4.58-diag22 | paper mode止損後持倉未清零：精度差導致new_qty極小值>0，加0.01%容差判斷視為完全平倉 | — |
+| v4.58-diag23 | **DB路徑固定bug**：同上，database.py import時Volume未掛載 | — |
+| v4.58-diag24 | **DB路徑固定bug**：`database.py`在模組import時決定`DB_FILE`，若Railway Volume掛載晚於import則永遠指向容器本地路徑，重啟即清空；改為每次呼叫`_get_db_file()`動態決定。同修`api_download_db`用env var而非Volume路徑的問題 | — |
 
 ---
 
@@ -152,6 +155,7 @@ requirements.txt
 | `max_dist_to_upper_pct` | 1.0 | `app.py: run_scan()` | 距15分K上軌最大距離% |
 | `max_dist_1h_upper_pct` | 2.0 | `app.py: run_scan()` | 距1H上軌最大距離%（硬性過濾） |
 | `min_band_width_pct` | 1.0 | `app.py: scan_symbol()` | BB帶寬最小值% |
+| `max_band_width_pct` | 5.0 | `app.py: scan_symbol()` | BB帶寬最大值%，過濾已在暴漲的幣（0=停用） |
 | `prev_high_min_excess_pct` | 1.0 | `app.py: run_scan()` | 前高保護：前5根中至少一根高點須超過現價X% |
 
 ### 黑名單
@@ -211,6 +215,10 @@ sl_price = avg_entry × (1 + sl_loss_pct / leverage / 100)
 | extend_loss誤判（負數/來源不準） | diag19 | 改用realized+unrealized PnL/total_margin計算，不依賴avg_entry |
 | 日誌詳情按鈕無法點開 | diag20 | HTML屬性塞JSON遇特殊字元爆掉，改用index傳參 |
 | PnL double count | diag21 | `close_symbol`自算+WS累積值相加導致翻倍，改為優先用WS累積值 |
+| paper mode止損後持倉未清零 | diag22 | 精度差導致new_qty極小值>0，加0.01%容差判斷視為完全平倉 |
+| **儀表板/日誌停在部署前舊資料** | **diag23** | **`database.py` import時Volume未掛載導致DB_FILE固定為容器本地路徑；改用`_get_db_file()`每次動態決定** |
+| **設定頁參數儲存後不生效（抓預設值）** | **diag24** | **`config.py`同樣在import時固定路徑，Volume晚掛則`CONFIG_FILE`指向本地，儲存的設定讀不到；改用`_get_config_file()`** |
+| 正式版止損跳空未成交 | diag25 | 限價止損在極端行情可能無對手方；加掛Stop-Market保底單（限價價再+0.5%）確保一定成交 |
 
 ---
 
@@ -220,6 +228,20 @@ sl_price = avg_entry × (1 + sl_loss_pct / leverage / 100)
 |------|------|------|
 | `force_close_capital_pct` 未實作 | `trader.py: check_position_protection()` | config 有定義（-90%），但函數裡只有漲幅暫停加碼，沒有強制平倉邏輯 |
 | `ACCOUNT_UPDATE` margin_used 更新 | `trader.py: handle_user_event()` | 已用 `iw` 欄位更新，但 paper mode 沒有此欄位，paper 的 margin_used 可能不準 |
+| 診斷log未清除 | `trader.py: trading_loop()` | 主循環輪數log（每10輪）和POOL_DIAG（每30輪）仍在，正式版前需移除 |
+
+---
+
+## 待驗證問題（下一個對話串優先處理）
+
+| 問題 | 版本 | 狀態 |
+|------|------|------|
+| PnL double count | diag21修 | 未驗證：`close_symbol`自算+WS累積值相加翻倍，改為優先用WS累積值 |
+| 持倉清零精度 | diag22修 | 未驗證：止損單qty與持倉qty浮點差導致持倉殘留，加0.01%容差判斷 |
+| extend_loss濾網 | diag19修 | 未驗證：改用realized+unrealized PnL計算虧損率 |
+| 掃描器間歇停止 | 未修 | 偶爾掃描器停止後不再寫SCAN log，原因不明，background_scanner有保護但可能不夠 |
+| 日誌頁不自動更新 | 未修 | 進入日誌頁後需手動按篩選，沒有自動輪詢機制 |
+| ROE計算準確性 | diag21修後 | 未驗證：需要一筆完整交易（開倉→止盈/止損）確認ROE正確 |
 
 ---
 
@@ -234,7 +256,8 @@ state = {
     "candidate_pool": list,
     "scanner_latest_result": list,
     "tp_sl_orders": dict,            # symbol -> {tp1_limit, tp2_limit}
-    "symbol_sl_order": dict,         # symbol -> order_id（單一止損單）
+    "symbol_sl_order": dict,         # symbol -> order_id（止損限價單）
+    "symbol_sl_stop_order": dict,    # symbol -> order_id（止損 Stop-Market 保底單，正式版專用）
     "symbol_sl_triggered": set,      # 止損單已觸發，等待完全平倉，不重掛任何單
     "sl_cooldown_until": dict,       # symbol -> timestamp，止損後冷卻期
     "tp_tier1_done": set,            # 第一段止盈已成交的幣種

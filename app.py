@@ -144,7 +144,10 @@ async def scan_symbol(session, symbol, cfg=None, volume_map=None, next_funding_m
 
     band_width_pct = (upper - middle) / middle * 100
     min_band = float(cfg.get("min_band_width_pct") or 1.0) if cfg else 1.0
+    max_band = float(cfg.get("max_band_width_pct") or 0.0) if cfg else 0.0
     if band_width_pct < min_band:
+        return None
+    if max_band > 0 and band_width_pct > max_band:
         return None
 
     dist_to_upper_pct = (upper - price) / upper * 100
@@ -479,7 +482,7 @@ def api_config_set():
         "margin_usage_limit_pct", "min_volume_usdt",
         "candidate_pool_refresh_min",
         "max_dist_to_upper_pct", "max_dist_1h_upper_pct",
-        "min_band_width_pct", "prev_high_min_excess_pct",
+        "min_band_width_pct", "max_band_width_pct", "prev_high_min_excess_pct",
         "black_k_require_below_upper", "black_k_max_upper_slope_pct", "black_k_upper_slope_lookback",
         "blacklist",
         "extend_orders_max", "extend_loss_pct",
@@ -590,7 +593,8 @@ def api_pnl_summary():
 def api_download_db():
     """下載完整 SQLite 資料庫"""
     import os
-    db_path = os.environ.get("DB_PATH", "trading.db")
+    from database import _get_db_file
+    db_path = _get_db_file()
     if not os.path.exists(db_path):
         return jsonify({"error": "DB not found"}), 404
     from flask import send_file
@@ -660,14 +664,15 @@ def api_logs():
 @app.route("/api/debug/db")
 def api_debug_db():
     import os
-    from database import DB_FILE, get_conn
+    from database import _get_db_file, get_conn
+    db_file = _get_db_file()
     try:
         conn = get_conn()
         count = conn.execute("SELECT COUNT(*) FROM system_log").fetchone()[0]
         conn.close()
-        return jsonify({"db_file": DB_FILE, "exists": os.path.exists(DB_FILE), "log_count": count})
+        return jsonify({"db_file": db_file, "exists": os.path.exists(db_file), "log_count": count})
     except Exception as e:
-        return jsonify({"db_file": DB_FILE, "error": str(e)}), 500
+        return jsonify({"db_file": db_file, "error": str(e)}), 500
 
 
 @app.route("/api/logs/summary")
