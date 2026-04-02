@@ -159,7 +159,7 @@ def get_balance_cached() -> dict | None:
 
 # ===== 1分K上軌批次更新 =====
 
-def _calc_bb_upper(klines: list, period: int = 20, std_mult: float = 2.0) -> float | None:
+def _calc_bb_upper(klines: list, period: int = 21, std_mult: float = 2.0) -> float | None:
     if not klines or len(klines) < period:
         return None
     closes = [float(k[4]) for k in klines]
@@ -187,14 +187,14 @@ async def refresh_upper_1m(exchange: BaseExchange, symbols: list):
         try:
             async with session.get(
                 "https://fapi.binance.com/fapi/v1/klines",
-                params={"symbol": sym, "interval": "1m", "limit": 25},
+                params={"symbol": sym, "interval": "1m", "limit": 60},
                 timeout=_aiohttp.ClientTimeout(total=8)
             ) as r:
                 klines = await r.json()
             upper = _calc_bb_upper(klines)
             if upper:
                 closes = [float(k[4]) for k in klines]
-                period = 20
+                period = 21
                 middle = sum(closes[-period:]) / period if len(closes) >= period else None
                 entry = state["upper_1m_cache"].get(sym, {})
                 history = entry.get("history", [])
@@ -223,9 +223,9 @@ async def refresh_upper_1m(exchange: BaseExchange, symbols: list):
 
 
 def get_upper_1m(symbol: str) -> float | None:
-    """取得1分K布林上軌快取值"""
+    """取得1分K布林上軌快取值（超過30秒視為過期）"""
     entry = state["upper_1m_cache"].get(symbol)
-    if entry:
+    if entry and (time.time() - entry.get("ts", 0)) <= 30:
         return entry["upper"]
     return None
 
@@ -236,7 +236,7 @@ def get_upper_1m_slope(symbol: str, lookback: int = 5) -> float | None:
     正值=上軌上漲，負值=上軌下跌
     """
     entry = state["upper_1m_cache"].get(symbol)
-    if not entry:
+    if not entry or (time.time() - entry.get("ts", 0)) > 30:
         return None
     history = entry.get("history", [])
     if len(history) < lookback + 1:
